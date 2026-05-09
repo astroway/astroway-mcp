@@ -1,0 +1,87 @@
+name: Publish @astroway/mcp
+
+# Trusted Publishing via npm OIDC — no long-lived token in secrets.
+# npm verifies cryptographically that the publish request comes from this
+# exact workflow in this exact repository.
+#
+# This repository is public, so each release ships SLSA provenance via
+# `npm publish --provenance`: a Sigstore-attested record of "this package
+# was built from this commit, in this workflow, on this runner". Anyone
+# can verify it from the npmjs page or via `npm view`.
+#
+# One-time setup on the npm side (https://www.npmjs.com/package/@astroway/mcp/access):
+#   Trusted Publishers → Add → Provider: GitHub Actions
+#     Repository:        astroway/astroway-mcp
+#     Workflow filename: publish-mcp.yml
+#     Environment:       (leave empty)
+#
+# Triggers:
+#   - workflow_dispatch (manual run from GitHub UI; supports dry_run)
+#   - push of tag matching `v*` (e.g. `v0.2.1`) — intentional release marker
+#
+# Release flow:
+#   npm version patch          # bump + git tag
+#   git push && git push --tags
+#   # ... or trigger manually via Actions tab → Run workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Skip the actual publish (build + pack only)'
+        required: false
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    name: Build, pack, publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for npm OIDC + SLSA provenance
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install deps (clean)
+        run: npm ci
+
+      - name: Build (regen tools from live OpenAPI + tsc)
+        run: npm run build
+
+      - name: Show package contents
+        run: npm pack --dry-run
+
+      - name: Verify version is unpublished
+        # Hard-fail only when about to actually publish; dry-runs accept
+        # an existing version (the same baseline you're testing against).
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VER=$(node -p "require('./package.json').version")
+          if npm view "$PKG_NAME@$PKG_VER" version 2>/dev/null; then
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "::warning::$PKG_NAME@$PKG_VER already exists — fine for dry-run, would block a real publish."
+            else
+              echo "::error::$PKG_NAME@$PKG_VER already exists on npm. Bump the version first."
+              exit 1
+            fi
+          else
+            echo "$PKG_NAME@$PKG_VER is new — OK to publish."
+          fi
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+
+      - name: Publish to npm (OIDC + provenance)
+        if: github.event_name == 'push' || inputs.dry_run != true
+        run: npm publish --access public --provenance

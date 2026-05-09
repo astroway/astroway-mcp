@@ -1,0 +1,61 @@
+{
+  "name": "@astroway/mcp",
+  "version": "0.2.0",
+  "description": "MCP server exposing every endpoint of the AstroWay Calculation API as tools — natal, synastry, transits, Vedic dashas, Tarot, Numerology, Human Design, AI horoscopes — for Claude Desktop, Cursor and any MCP-compatible AI agent.",
+  "type": "module",
+  "bin": {
+    "astroway-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "generate": "tsx scripts/generate-tools.ts",
+    "build": "npm run generate && tsc",
+    "start": "node dist/index.js",
+    "dev": "npm run generate && tsx src/index.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "astrology",
+    "api",
+    "claude",
+    "cursor",
+    "ai-agent",
+    "tools",
+    "natal-chart",
+    "synastry",
+    "vedic",
+    "human-design",
+    "tarot",
+    "numerology",
+    "swiss-ephemeris"
+  ],
+  "license": "MIT",
+  "author": "AstroWay <astroway.info@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/astroway/astroway-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/astroway/astroway-mcp/issues"
+  },
+  "homepage": "https://github.com/astroway/astroway-mcp#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
