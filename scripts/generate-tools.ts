@@ -3,15 +3,9 @@
  * POST endpoint by input shape, emit `src/tools.generated.ts` for the MCP
  * server to register.
  *
- * Run via `npm run build`.
- *
- * Strategy:
- *   - Fetch OpenAPI from ASTROWAY_OPENAPI_URL (default: prod).
- *   - Iterate POST operations; skip "System" tag (admin/key endpoints) and
- *     ops with no security (public/sandbox duplicates).
- *   - For each surviving op: pick a schema kind from path + JSON example;
- *     fall back to a permissive object schema with the example in the
- *     description so the LLM still has guidance.
+ * v0.3+ — also injects credit-cost annotation into each tool description by
+ * fetching /v1/public/endpoint-costs (falls back to no annotation if endpoint
+ * is unreachable, build still succeeds).
  */
 
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -19,16 +13,12 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const OPENAPI_URL = process.env.ASTROWAY_OPENAPI_URL ?? 'https://api.astroway.info/v1/openapi.json';
+const COSTS_URL = process.env.ASTROWAY_COSTS_URL ?? 'https://api.astroway.info/v1/public/endpoint-costs';
 
 type SchemaKind =
-  | 'chart'
-  | 'twoChart'
-  | 'chartTarget'
-  | 'horoscopeSign'
-  | 'horoscopeCompat'
-  | 'year'
-  | 'date'
-  | 'generic';
+  | 'chart' | 'twoChart' | 'chartTarget'
+  | 'horoscopeSign' | 'horoscopeCompat'
+  | 'year' | 'date' | 'generic';
 
 interface GeneratedTool {
   name: string;
@@ -36,6 +26,8 @@ interface GeneratedTool {
   endpoint: string;
   schemaKind: SchemaKind;
   group: string;
+  cost?: number;
+  tier?: string;
 }
 
 interface OpenAPIOperation {
@@ -44,17 +36,16 @@ interface OpenAPIOperation {
   description?: string;
   operationId?: string;
   security?: unknown[];
-  requestBody?: {
-    content?: {
-      'application/json'?: {
-        example?: unknown;
-      };
-    };
-  };
+  deprecated?: boolean;
+  requestBody?: { content?: { 'application/json'?: { example?: unknown } } };
 }
 
 interface OpenAPIDoc {
   paths: Record<string, Record<string, OpenAPIOperation>>;
+}
+
+interface CostManifest {
+  endpoints: Record<string, { tier: string; cost: number }>;
 }
 
 function sanitizeName(path: string): string {
@@ -65,26 +56,15 @@ function sanitizeName(path: string): string {
 }
 
 const TWO_CHART_PREFIXES = [
-  '/synastry',
-  '/composite',
-  '/davison',
-  '/interpret/synastry',
-  '/horoscope/compatibility-personalised',
-  '/vedic/compatibility/',
-  '/cross/synastry',
+  '/synastry', '/composite', '/davison',
+  '/interpret/synastry', '/horoscope/compatibility-personalised',
+  '/vedic/compatibility/', '/cross/synastry',
 ];
 
 const CHART_TARGET_HINTS = [
-  '/transits',
-  '/progressions',
-  '/solar-return',
-  '/lunar-return',
-  '/secondary-progressions',
-  '/saturn-return',
-  '/transit-calendar',
-  '/dashas/',
-  '/lunar-phase-day',
-  '/at-date',
+  '/transits', '/progressions', '/solar-return', '/lunar-return',
+  '/secondary-progressions', '/saturn-return', '/transit-calendar',
+  '/dashas/', '/lunar-phase-day', '/at-date',
 ];
 
 function classify(endpointPath: string, body: string | null): SchemaKind {
@@ -108,13 +88,56 @@ function trimDesc(desc: string, max = 380): string {
   return clean.slice(0, max - 1) + '…';
 }
 
-function buildDescription(rawDesc: string, body: string | null, group: string): string {
+const TIER_NAMES: Record<string, string> = {
+  TIER_HALF: 'Tier ½', TIER_1: 'Tier 1', TIER_2: 'Tier 2', TIER_3: 'Tier 3',
+  TIER_4: 'Tier 4', TIER_4_5: 'Tier 4.5', TIER_5: 'Tier 5', TIER_6: 'Tier 6',
+  TIER_7: 'Tier 7', TIER_8: 'Tier 8',
+};
+
+function buildDescription(rawDesc: string, body: string | null, group: string, cost?: number, tier?: string, deprecated?: boolean): string {
   let out = trimDesc(rawDesc);
   out += `\n\n[Group: ${group}]`;
+  if (cost !== undefined) {
+    const tierLabel = tier && TIER_NAMES[tier] ? ` (${TIER_NAMES[tier]})` : '';
+    const formatted = cost >= 1000 ? cost.toLocaleString('en-US') : String(cost);
+    let costLine = `[Cost: ${formatted} credit${cost === 1 ? '' : 's'}${tierLabel}]`;
+    if (cost >= 1000) {
+      const pct = Math.round((cost / 10000) * 100);
+      costLine += ` ⚠️ Premium — ~${pct}% of free monthly budget. Confirm with user before invoking.`;
+    } else if (cost >= 250) {
+      costLine += ` ⚠️ Heavy — confirm with user before invoking.`;
+    }
+    out += `\n${costLine}`;
+  }
+  if (deprecated) {
+    out += `\n[⚠️ DEPRECATED — will be removed in a future API version. Avoid using.]`;
+  }
   if (body && body.trim() && body !== 'null' && body.length < 320) {
     out += `\n\nExample request body: ${body.trim()}`;
   }
   return out;
+}
+
+async function fetchCostManifest(): Promise<CostManifest> {
+  try {
+    console.log(`[generate-tools] fetching cost manifest from ${COSTS_URL}`);
+    const res = await fetch(COSTS_URL);
+    if (!res.ok) {
+      console.warn(`[generate-tools] cost manifest fetch failed: ${res.status}. Annotations will be skipped.`);
+      return { endpoints: {} };
+    }
+    const json = await res.json() as { ok: boolean; data?: CostManifest };
+    if (json.ok && json.data) {
+      const count = Object.keys(json.data.endpoints).length;
+      console.log(`[generate-tools] loaded cost manifest: ${count} endpoints`);
+      return json.data;
+    }
+    console.warn(`[generate-tools] cost manifest invalid response. Annotations will be skipped.`);
+    return { endpoints: {} };
+  } catch (e: any) {
+    console.warn(`[generate-tools] cost manifest unavailable: ${e?.message}. Annotations will be skipped.`);
+    return { endpoints: {} };
+  }
 }
 
 async function main(): Promise<void> {
@@ -124,9 +147,12 @@ async function main(): Promise<void> {
     throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
   }
   const doc = (await res.json()) as OpenAPIDoc;
+  const costs = await fetchCostManifest();
 
   const tools: GeneratedTool[] = [];
   const skippedReason: Record<string, number> = {};
+  let costAnnotated = 0;
+  let deprecatedSkipped = 0;
 
   for (const [path, methods] of Object.entries(doc.paths)) {
     const op = methods.post;
@@ -144,16 +170,28 @@ async function main(): Promise<void> {
       skippedReason['public-no-auth'] = (skippedReason['public-no-auth'] ?? 0) + 1;
       continue;
     }
+    if (op.deprecated) {
+      // We still register, but annotation marks it. Optional skip via env:
+      if (process.env.SKIP_DEPRECATED === '1') {
+        deprecatedSkipped++;
+        skippedReason['deprecated'] = (skippedReason['deprecated'] ?? 0) + 1;
+        continue;
+      }
+    }
     const example = op.requestBody?.content?.['application/json']?.example;
     const body = example != null ? JSON.stringify(example) : null;
     const desc = op.description ?? op.summary ?? '';
     const kind = classify(path, body);
+    const costInfo = costs.endpoints[path];
+    if (costInfo) costAnnotated++;
     tools.push({
       name: sanitizeName(path),
-      description: buildDescription(desc, body, group),
+      description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated),
       endpoint: path,
       schemaKind: kind,
       group,
+      cost: costInfo?.cost,
+      tier: costInfo?.tier,
     });
   }
 
@@ -176,14 +214,9 @@ async function main(): Promise<void> {
   const fileBody = `${banner}
 
 export type SchemaKind =
-  | 'chart'
-  | 'twoChart'
-  | 'chartTarget'
-  | 'horoscopeSign'
-  | 'horoscopeCompat'
-  | 'year'
-  | 'date'
-  | 'generic';
+  | 'chart' | 'twoChart' | 'chartTarget'
+  | 'horoscopeSign' | 'horoscopeCompat'
+  | 'year' | 'date' | 'generic';
 
 export interface GeneratedTool {
   name: string;
@@ -191,6 +224,8 @@ export interface GeneratedTool {
   endpoint: string;
   schemaKind: SchemaKind;
   group: string;
+  cost?: number;
+  tier?: string;
 }
 
 export const GENERATED_TOOLS: readonly GeneratedTool[] = ${JSON.stringify(unique, null, 2)} as const;
@@ -199,6 +234,7 @@ export const GENERATED_TOOLS: readonly GeneratedTool[] = ${JSON.stringify(unique
   writeFileSync(outPath, fileBody, 'utf8');
 
   console.log(`[generate-tools] wrote ${unique.length} tools → src/tools.generated.ts`);
+  console.log(`[generate-tools] cost annotated: ${costAnnotated}/${unique.length}`);
   console.log(`[generate-tools] schema kinds: ${JSON.stringify(kindCounts)}`);
   console.log(`[generate-tools] skipped: ${JSON.stringify(skippedReason)}`);
 }

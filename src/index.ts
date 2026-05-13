@@ -2,23 +2,9 @@
 /**
  * @astroway/mcp — MCP server exposing the AstroWay API as tools for LLM agents.
  *
- * Tool list is generated at build time from the live OpenAPI spec
- * (https://api.astroway.info/v1/openapi.json) — see scripts/generate-tools.ts.
- * Every endpoint that ships in the API is available here without manual editing.
- *
- * Usage:
- *   ASTROWAY_API_KEY=your-key npx @astroway/mcp
- *
- * Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
- *   {
- *     "mcpServers": {
- *       "astroway": {
- *         "command": "npx",
- *         "args": ["-y", "@astroway/mcp"],
- *         "env": { "ASTROWAY_API_KEY": "aw_live_..." }
- *       }
- *     }
- *   }
+ * Generated tools come from build-time fetch of /v1/openapi.json
+ * (see scripts/generate-tools.ts). Built-in tools (account_status, cost_estimate)
+ * are hand-coded and registered alongside the generated ones.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -26,14 +12,19 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 
 import { GENERATED_TOOLS, type SchemaKind } from './tools.generated.js';
+import { fetchAccountStatus } from './tools/account-status.js';
+import { loadCostManifest, estimateOne, formatEstimate } from './tools/cost-estimate.js';
+import { fetchWithRetry } from './retry.js';
 
 const API_KEY = process.env.ASTROWAY_API_KEY ?? '';
 const BASE_URL = process.env.ASTROWAY_BASE_URL ?? 'https://api.astroway.info/v1';
-const MCP_VERSION = '0.2.0';
+const VERBOSE = process.env.ASTROWAY_VERBOSE === '1' || process.env.ASTROWAY_VERBOSE === 'true';
+const MCP_VERSION = '0.3.0';
 
 if (!API_KEY) {
   console.error('Error: ASTROWAY_API_KEY environment variable is required.');
-  console.error('Get a key at https://api.astroway.info/dashboard/sign-up — 10 000 credits/month free.');
+  console.error('Get a key at https://api.astroway.info/dashboard/sign-up — 10,000 credits/month free.');
+  console.error('Then set: export ASTROWAY_API_KEY="aw_live_..." (or aw_test_... for sandbox).');
   process.exit(1);
 }
 
@@ -41,23 +32,38 @@ if (!API_KEY) {
 
 async function callApi(endpoint: string, body: Record<string, unknown>): Promise<string> {
   const url = `${BASE_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Api-Key': API_KEY,
-      'User-Agent': `astroway-mcp/${MCP_VERSION}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  const json = (await res.json()) as { ok?: boolean; data?: unknown; error?: { code?: string; message?: string } };
-
-  if (!res.ok || !json.ok) {
-    const err = json.error ?? {};
-    return `Error ${res.status} (${err.code ?? 'UNKNOWN'}): ${err.message ?? 'Unknown error'}`;
+  if (VERBOSE) console.error(`[astroway-mcp] → POST ${url}\n  body: ${JSON.stringify(body).slice(0, 500)}`);
+  try {
+    const res = await fetchWithRetry(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Api-Key': API_KEY,
+        'User-Agent': `astroway-mcp/${MCP_VERSION}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const json = (await res.json()) as { ok?: boolean; data?: unknown; error?: { code?: string; message?: string } };
+    if (VERBOSE) console.error(`[astroway-mcp] ← ${res.status} ${res.statusText}`);
+    if (!res.ok || !json.ok) {
+      const err = json.error ?? {};
+      // Helpful hints based on error code
+      const code = err.code ?? 'UNKNOWN';
+      const message = err.message ?? 'Unknown error';
+      let hint = '';
+      if (code === 'RATE_LIMITED' || res.status === 429) {
+        hint = '\n\nHint: rate limit exceeded. Wait 60s or upgrade tier (`astroway.account_status` shows current limit).';
+      } else if (code === 'OUT_OF_CREDITS' || code === 'PLAN_UPGRADE_REQUIRED' || res.status === 402) {
+        hint = '\n\nHint: budget exceeded or endpoint requires a higher tier. Run `astroway.account_status` to check.';
+      } else if (code === 'INVALID_KEY' || res.status === 401) {
+        hint = '\n\nHint: API key invalid or revoked. Generate a new one at https://api.astroway.info/dashboard/keys.';
+      }
+      return `Error ${res.status} (${code}): ${message}${hint}`;
+    }
+    return JSON.stringify(json.data, null, 2);
+  } catch (e: any) {
+    return `Network error calling ${endpoint}: ${e?.message ?? 'unknown'}. Check your connection or ASTROWAY_BASE_URL.`;
   }
-  return JSON.stringify(json.data, null, 2);
 }
 
 // ─── Schema shapes (one per SchemaKind) ──────────────────────
@@ -136,7 +142,7 @@ const SCHEMAS: Record<SchemaKind, Record<string, z.ZodTypeAny>> = {
   generic: genericShape,
 };
 
-// ─── Body transformers (flatten MCP params → API body) ───────
+// ─── Body transformers ───────────────────────────────────────
 
 function chartBody(p: Record<string, unknown>): Record<string, unknown> {
   const { houseSystem, city, ...rest } = p;
@@ -168,7 +174,6 @@ const BODY_TRANSFORMERS: Record<SchemaKind, (p: Record<string, any>) => Record<s
   horoscopeCompat: (p) => p,
   year: (p) => p,
   date: (p) => p,
-  // Generic: API accepts arbitrary object — pass through whatever the LLM sends
   generic: (p) => (typeof p.body === 'object' && p.body !== null ? (p.body as Record<string, unknown>) : p),
 };
 
@@ -179,7 +184,40 @@ const server = new McpServer({
   version: MCP_VERSION,
 });
 
-let registered = 0;
+// ─── Built-in tools (handle-coded) ───────────────────────────
+
+server.registerTool(
+  'astroway_account_status',
+  {
+    title: 'astroway_account_status',
+    description: 'Check current API key status: tier, credit balance, rate limits, monthly cycle reset. Run this BEFORE invoking expensive endpoints (Tier 4+ at 100+ credits, Tier 6/7 at 500-5000 credits) to confirm the user has budget. Returns plain-text human-readable summary.',
+    inputSchema: {},
+  },
+  async () => {
+    const text = await fetchAccountStatus(BASE_URL, API_KEY);
+    return { content: [{ type: 'text' as const, text }] };
+  },
+);
+
+server.registerTool(
+  'astroway_cost_estimate',
+  {
+    title: 'astroway_cost_estimate',
+    description: 'Estimate the credit cost of one or more endpoints WITHOUT invoking them. Returns total + per-endpoint breakdown with tier annotations. Useful when planning multi-step workflows: estimate first, ask user confirmation, then invoke. Cache TTL 5 min.',
+    inputSchema: {
+      endpoints: z.array(z.string()).min(1).describe('Endpoint paths to estimate, e.g. ["/chart", "/synastry", "/reports/natal"]. Leading slash optional.'),
+    },
+  },
+  async ({ endpoints }) => {
+    const manifest = await loadCostManifest(BASE_URL);
+    const results = endpoints.map((e: string) => estimateOne(manifest, e));
+    return { content: [{ type: 'text' as const, text: formatEstimate(results) }] };
+  },
+);
+
+// ─── Generated tools ─────────────────────────────────────────
+
+let registered = 2; // built-in count
 for (const tool of GENERATED_TOOLS) {
   const schema = SCHEMAS[tool.schemaKind];
   const transform = BODY_TRANSFORMERS[tool.schemaKind];
@@ -199,7 +237,7 @@ for (const tool of GENERATED_TOOLS) {
   registered++;
 }
 
-console.error(`[astroway-mcp] registered ${registered} tools (base ${BASE_URL})`);
+console.error(`[astroway-mcp/${MCP_VERSION}] registered ${registered} tools (base ${BASE_URL})`);
 
 const transport = new StdioServerTransport();
 server.connect(transport).catch((err: unknown) => {
