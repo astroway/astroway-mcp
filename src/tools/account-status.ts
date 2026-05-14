@@ -1,9 +1,10 @@
 /**
- * astroway.account_status — surface tier, credit balance, rate-limit status.
+ * astroway_account_status — surface tier, credit balance, rate-limit status.
  * Lets the LLM check budget before invoking expensive endpoints.
  */
 
 import { fetchWithRetry } from '../retry.js';
+import { MCP_VERSION } from '../version.js';
 
 interface UsageResponse {
   ok: boolean;
@@ -27,7 +28,7 @@ export async function fetchAccountStatus(baseUrl: string, apiKey: string): Promi
       method: 'GET',
       headers: {
         'X-Api-Key': apiKey,
-        'User-Agent': 'astroway-mcp',
+        'User-Agent': `astroway-mcp/${MCP_VERSION}`,
       },
     });
     const json = (await res.json()) as UsageResponse;

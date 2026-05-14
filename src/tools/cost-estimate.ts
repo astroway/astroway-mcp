@@ -1,9 +1,10 @@
 /**
- * astroway.cost_estimate — quick lookup of credit cost for one or more endpoints
+ * astroway_cost_estimate — quick lookup of credit cost for one or more endpoints
  * before actually invoking them. Saves the LLM from "fail-cheap-then-retry" loops.
  */
 
 import { TIER_TABLE } from '../cost-data.js';
+import { MCP_VERSION } from '../version.js';
 
 interface CostManifest {
   endpoints: Record<string, { tier: string; cost: number }>;
@@ -18,7 +19,7 @@ export async function loadCostManifest(baseUrl: string): Promise<CostManifest> {
   if (cached && now - cachedAt < CACHE_TTL_MS) return cached;
   try {
     const url = `${baseUrl}/public/endpoint-costs`;
-    const res = await fetch(url, { headers: { 'User-Agent': 'astroway-mcp' } });
+    const res = await fetch(url, { headers: { 'User-Agent': `astroway-mcp/${MCP_VERSION}` } });
     if (res.ok) {
       const json = await res.json() as { ok: boolean; data?: CostManifest };
       if (json.ok && json.data) {

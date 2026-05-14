@@ -15,11 +15,11 @@ import { GENERATED_TOOLS, type SchemaKind } from './tools.generated.js';
 import { fetchAccountStatus } from './tools/account-status.js';
 import { loadCostManifest, estimateOne, formatEstimate } from './tools/cost-estimate.js';
 import { fetchWithRetry } from './retry.js';
+import { MCP_VERSION } from './version.js';
 
 const API_KEY = process.env.ASTROWAY_API_KEY ?? '';
 const BASE_URL = process.env.ASTROWAY_BASE_URL ?? 'https://api.astroway.info/v1';
 const VERBOSE = process.env.ASTROWAY_VERBOSE === '1' || process.env.ASTROWAY_VERBOSE === 'true';
-const MCP_VERSION = '0.3.0';
 
 if (!API_KEY) {
   console.error('Error: ASTROWAY_API_KEY environment variable is required.');
@@ -52,9 +52,9 @@ async function callApi(endpoint: string, body: Record<string, unknown>): Promise
       const message = err.message ?? 'Unknown error';
       let hint = '';
       if (code === 'RATE_LIMITED' || res.status === 429) {
-        hint = '\n\nHint: rate limit exceeded. Wait 60s or upgrade tier (`astroway.account_status` shows current limit).';
+        hint = '\n\nHint: rate limit exceeded. Wait 60s or upgrade tier (call `astroway_account_status` to see current limit).';
       } else if (code === 'OUT_OF_CREDITS' || code === 'PLAN_UPGRADE_REQUIRED' || res.status === 402) {
-        hint = '\n\nHint: budget exceeded or endpoint requires a higher tier. Run `astroway.account_status` to check.';
+        hint = '\n\nHint: budget exceeded or endpoint requires a higher tier. Call `astroway_account_status` to check.';
       } else if (code === 'INVALID_KEY' || res.status === 401) {
         hint = '\n\nHint: API key invalid or revoked. Generate a new one at https://api.astroway.info/dashboard/keys.';
       }

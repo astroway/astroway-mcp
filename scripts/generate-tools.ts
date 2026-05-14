@@ -59,6 +59,7 @@ const TWO_CHART_PREFIXES = [
   '/synastry', '/composite', '/davison',
   '/interpret/synastry', '/horoscope/compatibility-personalised',
   '/vedic/compatibility/', '/cross/synastry',
+  '/reports/synastry', '/reports/ai/synastry',
 ];
 
 const CHART_TARGET_HINTS = [
@@ -68,6 +69,12 @@ const CHART_TARGET_HINTS = [
 ];
 
 function classify(endpointPath: string, body: string | null): SchemaKind {
+  // Robust check first — body containing both `chart1` and `chart2` keys is unambiguously two-chart.
+  // Catches /reports/synastry, /reports/ai/synastry-narrative, and any future two-chart endpoints
+  // that don't match the prefix list.
+  if (body && /"chart1"\s*:/.test(body) && /"chart2"\s*:/.test(body)) {
+    return 'twoChart';
+  }
   for (const p of TWO_CHART_PREFIXES) {
     if (endpointPath.startsWith(p) || endpointPath === p) return 'twoChart';
   }
@@ -158,6 +165,14 @@ async function main(): Promise<void> {
     const op = methods.post;
     if (!op) {
       skippedReason['non-post'] = (skippedReason['non-post'] ?? 0) + 1;
+      continue;
+    }
+    if (/\{[^}]+\}/.test(path)) {
+      // Path-template endpoints (e.g., /webhooks/{id}/test) cannot be invoked without
+      // path-parameter substitution — registering them produces 404s. Skip until v0.4+
+      // adds a pathParams schemaKind.
+      console.warn(`[generate-tools] skipping path-template endpoint: ${path}`);
+      skippedReason['path-template-unsupported'] = (skippedReason['path-template-unsupported'] ?? 0) + 1;
       continue;
     }
     const tags = op.tags ?? [];
