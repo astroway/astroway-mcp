@@ -3,6 +3,12 @@
  * POST endpoint by input shape, emit `src/tools.generated.ts` for the MCP
  * server to register.
  *
+ * v0.4+ — emits TYPED Zod schemas for endpoints whose openapi.json schema
+ * is a `$ref` into `components.schemas`. The referenced JSON Schema is
+ * converted to Zod source code via `json-schema-to-zod` and embedded inline.
+ * Endpoints without typed schemas fall back to the 7 hand-written shapes
+ * (chart, twoChart, chartTarget, etc.) via the heuristic classifier.
+ *
  * v0.3+ — also injects credit-cost annotation into each tool description by
  * fetching /v1/public/endpoint-costs (falls back to no annotation if endpoint
  * is unreachable, build still succeeds).
@@ -11,6 +17,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { jsonSchemaToZod } from 'json-schema-to-zod';
 
 const OPENAPI_URL = process.env.ASTROWAY_OPENAPI_URL ?? 'https://api.astroway.info/v1/openapi.json';
 const COSTS_URL = process.env.ASTROWAY_COSTS_URL ?? 'https://api.astroway.info/v1/public/endpoint-costs';
@@ -18,7 +25,8 @@ const COSTS_URL = process.env.ASTROWAY_COSTS_URL ?? 'https://api.astroway.info/v
 type SchemaKind =
   | 'chart' | 'twoChart' | 'chartTarget'
   | 'horoscopeSign' | 'horoscopeCompat'
-  | 'year' | 'date' | 'generic';
+  | 'year' | 'date' | 'generic'
+  | 'typed'; // ← new in v0.4
 
 interface GeneratedTool {
   name: string;
@@ -28,6 +36,8 @@ interface GeneratedTool {
   group: string;
   cost?: number;
   tier?: string;
+  /** Component name for typedSchemaKind — references an entry in TYPED_SCHEMAS map. */
+  typedRef?: string;
 }
 
 interface OpenAPIOperation {
@@ -37,11 +47,19 @@ interface OpenAPIOperation {
   operationId?: string;
   security?: unknown[];
   deprecated?: boolean;
-  requestBody?: { content?: { 'application/json'?: { example?: unknown } } };
+  requestBody?: {
+    content?: {
+      'application/json'?: {
+        example?: unknown;
+        schema?: { $ref?: string; type?: string };
+      };
+    };
+  };
 }
 
 interface OpenAPIDoc {
   paths: Record<string, Record<string, OpenAPIOperation>>;
+  components?: { schemas?: Record<string, unknown> };
 }
 
 interface CostManifest {
@@ -68,10 +86,8 @@ const CHART_TARGET_HINTS = [
   '/dashas/', '/lunar-phase-day', '/at-date',
 ];
 
-function classify(endpointPath: string, body: string | null): SchemaKind {
+function classifyFallback(endpointPath: string, body: string | null): SchemaKind {
   // Robust check first — body containing both `chart1` and `chart2` keys is unambiguously two-chart.
-  // Catches /reports/synastry, /reports/ai/synastry-narrative, and any future two-chart endpoints
-  // that don't match the prefix list.
   if (body && /"chart1"\s*:/.test(body) && /"chart2"\s*:/.test(body)) {
     return 'twoChart';
   }
@@ -147,6 +163,12 @@ async function fetchCostManifest(): Promise<CostManifest> {
   }
 }
 
+/** Resolve a $ref like "#/components/schemas/ChartInput" to the component name. */
+function refToComponentName(ref: string): string | null {
+  const m = ref.match(/^#\/components\/schemas\/(.+)$/);
+  return m ? m[1] : null;
+}
+
 async function main(): Promise<void> {
   console.log(`[generate-tools] fetching OpenAPI from ${OPENAPI_URL}`);
   const res = await fetch(OPENAPI_URL);
@@ -156,10 +178,14 @@ async function main(): Promise<void> {
   const doc = (await res.json()) as OpenAPIDoc;
   const costs = await fetchCostManifest();
 
+  const components = doc.components?.schemas ?? {};
+  const componentNames = Object.keys(components).sort();
+  console.log(`[generate-tools] openapi has ${componentNames.length} components.schemas`);
+
   const tools: GeneratedTool[] = [];
   const skippedReason: Record<string, number> = {};
   let costAnnotated = 0;
-  let deprecatedSkipped = 0;
+  let typedCount = 0;
 
   for (const [path, methods] of Object.entries(doc.paths)) {
     const op = methods.post;
@@ -168,9 +194,6 @@ async function main(): Promise<void> {
       continue;
     }
     if (/\{[^}]+\}/.test(path)) {
-      // Path-template endpoints (e.g., /webhooks/{id}/test) cannot be invoked without
-      // path-parameter substitution — registering them produces 404s. Skip until v0.4+
-      // adds a pathParams schemaKind.
       console.warn(`[generate-tools] skipping path-template endpoint: ${path}`);
       skippedReason['path-template-unsupported'] = (skippedReason['path-template-unsupported'] ?? 0) + 1;
       continue;
@@ -185,20 +208,34 @@ async function main(): Promise<void> {
       skippedReason['public-no-auth'] = (skippedReason['public-no-auth'] ?? 0) + 1;
       continue;
     }
-    if (op.deprecated) {
-      // We still register, but annotation marks it. Optional skip via env:
-      if (process.env.SKIP_DEPRECATED === '1') {
-        deprecatedSkipped++;
-        skippedReason['deprecated'] = (skippedReason['deprecated'] ?? 0) + 1;
-        continue;
-      }
+    if (op.deprecated && process.env.SKIP_DEPRECATED === '1') {
+      skippedReason['deprecated'] = (skippedReason['deprecated'] ?? 0) + 1;
+      continue;
     }
     const example = op.requestBody?.content?.['application/json']?.example;
     const body = example != null ? JSON.stringify(example) : null;
     const desc = op.description ?? op.summary ?? '';
-    const kind = classify(path, body);
+
+    // v0.4 — prefer typed schema if openapi.json provides $ref
+    const schemaSpec = op.requestBody?.content?.['application/json']?.schema;
+    let kind: SchemaKind;
+    let typedRef: string | undefined;
+    if (schemaSpec?.$ref) {
+      const compName = refToComponentName(schemaSpec.$ref);
+      if (compName && components[compName]) {
+        kind = 'typed';
+        typedRef = compName;
+        typedCount++;
+      } else {
+        kind = classifyFallback(path, body);
+      }
+    } else {
+      kind = classifyFallback(path, body);
+    }
+
     const costInfo = costs.endpoints[path];
     if (costInfo) costAnnotated++;
+
     tools.push({
       name: sanitizeName(path),
       description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated),
@@ -207,14 +244,40 @@ async function main(): Promise<void> {
       group,
       cost: costInfo?.cost,
       tier: costInfo?.tier,
+      typedRef,
     });
   }
 
+  // Dedupe by tool name (sanitized path).
   const seen = new Map<string, GeneratedTool>();
   for (const t of tools) {
     if (!seen.has(t.name)) seen.set(t.name, t);
   }
   const unique = Array.from(seen.values()).sort((a, b) => a.name.localeCompare(b.name));
+
+  // Find which components are referenced by at least one typed tool (so we only emit needed ones).
+  const usedComponents = new Set<string>();
+  for (const t of unique) {
+    if (t.typedRef) usedComponents.add(t.typedRef);
+  }
+
+  // Emit Zod source for each used component via json-schema-to-zod.
+  // The library returns a string like 'z.object({...})'.
+  const componentZod: Record<string, string> = {};
+  for (const compName of usedComponents) {
+    const comp = components[compName];
+    if (!comp) continue;
+    try {
+      // Resolve $refs in nested schemas: json-schema-to-zod doesn't follow $refs by default.
+      // We pass the full doc so it can resolve them via the resolveAllRefs/inline option.
+      // Strategy: replace any nested $ref pointing to components.schemas/X with the inlined component.
+      const inlined = inlineRefs(comp, components);
+      const zodSrc = jsonSchemaToZod(inlined as any);
+      componentZod[compName] = zodSrc;
+    } catch (e: any) {
+      console.warn(`[generate-tools] failed to convert ${compName}: ${e?.message}. Will fall back to z.unknown().`);
+    }
+  }
 
   const kindCounts = unique.reduce<Record<string, number>>((acc, t) => {
     acc[t.schemaKind] = (acc[t.schemaKind] ?? 0) + 1;
@@ -226,12 +289,25 @@ async function main(): Promise<void> {
   mkdirSync(outDir, { recursive: true });
   const outPath = join(outDir, 'tools.generated.ts');
   const banner = `/* AUTO-GENERATED — do not edit. Regenerate via 'npm run build' (runs scripts/generate-tools.ts). */`;
+
+  // Emit TYPED_SCHEMAS as a const map: componentName -> Zod schema instance.
+  // Each value is the raw Zod source returned by json-schema-to-zod, which we wrap
+  // as the right-hand side of an assignment.
+  const typedSchemaEntries = Array.from(usedComponents).sort().map((name) => {
+    const src = componentZod[name];
+    if (!src) return `  ${JSON.stringify(name)}: z.unknown(),`;
+    return `  ${JSON.stringify(name)}: ${src},`;
+  });
+
   const fileBody = `${banner}
+
+import { z } from 'zod';
 
 export type SchemaKind =
   | 'chart' | 'twoChart' | 'chartTarget'
   | 'horoscopeSign' | 'horoscopeCompat'
-  | 'year' | 'date' | 'generic';
+  | 'year' | 'date' | 'generic'
+  | 'typed';
 
 export interface GeneratedTool {
   name: string;
@@ -241,7 +317,16 @@ export interface GeneratedTool {
   group: string;
   cost?: number;
   tier?: string;
+  typedRef?: string;
 }
+
+/**
+ * Typed schemas extracted from /v1/openapi.json's components.schemas at build time.
+ * Used by tools whose schemaKind === 'typed' (looked up via tool.typedRef).
+ */
+export const TYPED_SCHEMAS: Record<string, z.ZodTypeAny> = {
+${typedSchemaEntries.join('\n')}
+};
 
 export const GENERATED_TOOLS: readonly GeneratedTool[] = ${JSON.stringify(unique, null, 2)} as const;
 `;
@@ -250,8 +335,35 @@ export const GENERATED_TOOLS: readonly GeneratedTool[] = ${JSON.stringify(unique
 
   console.log(`[generate-tools] wrote ${unique.length} tools → src/tools.generated.ts`);
   console.log(`[generate-tools] cost annotated: ${costAnnotated}/${unique.length}`);
+  console.log(`[generate-tools] typed schemas: ${typedCount} tools, ${usedComponents.size} components`);
   console.log(`[generate-tools] schema kinds: ${JSON.stringify(kindCounts)}`);
   console.log(`[generate-tools] skipped: ${JSON.stringify(skippedReason)}`);
+}
+
+/**
+ * Recursively inline `$ref`s pointing to `#/components/schemas/X` so that
+ * json-schema-to-zod can convert without a registry. We deep-clone to avoid
+ * mutating the original spec.
+ */
+function inlineRefs(schema: unknown, components: Record<string, unknown>, seen = new Set<string>()): unknown {
+  if (!schema || typeof schema !== 'object') return schema;
+  if (Array.isArray(schema)) return schema.map((s) => inlineRefs(s, components, seen));
+  const obj = schema as Record<string, unknown>;
+  if (typeof obj.$ref === 'string') {
+    const m = obj.$ref.match(/^#\/components\/schemas\/(.+)$/);
+    if (m && components[m[1]] && !seen.has(m[1])) {
+      const newSeen = new Set(seen);
+      newSeen.add(m[1]);
+      return inlineRefs(components[m[1]], components, newSeen);
+    }
+    // Circular or unresolvable — drop the $ref to avoid infinite recursion
+    return { type: 'object' };
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    out[k] = inlineRefs(v, components, seen);
+  }
+  return out;
 }
 
 main().catch((err) => {

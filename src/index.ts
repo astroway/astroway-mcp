@@ -11,10 +11,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-import { GENERATED_TOOLS, type SchemaKind } from './tools.generated.js';
+import { GENERATED_TOOLS, TYPED_SCHEMAS, type SchemaKind } from './tools.generated.js';
 import { fetchAccountStatus } from './tools/account-status.js';
 import { loadCostManifest, estimateOne, formatEstimate } from './tools/cost-estimate.js';
 import { fetchWithRetry } from './retry.js';
+import { registerAllPrompts } from './prompts.js';
 import { MCP_VERSION } from './version.js';
 
 const API_KEY = process.env.ASTROWAY_API_KEY ?? '';
@@ -140,7 +141,22 @@ const SCHEMAS: Record<SchemaKind, Record<string, z.ZodTypeAny>> = {
   year: yearShape,
   date: dateShape,
   generic: genericShape,
+  typed: genericShape, // sentinel — actual shape resolved per tool from TYPED_SCHEMAS
 };
+
+/**
+ * For 'typed' tools, resolve the inputSchema from TYPED_SCHEMAS[componentName].
+ * Returns a ZodRawShape. Falls back to genericShape if the component isn't a ZodObject.
+ */
+function resolveTypedShape(componentName: string): Record<string, z.ZodTypeAny> {
+  const schema = TYPED_SCHEMAS[componentName];
+  if (!schema) return genericShape;
+  if (schema instanceof z.ZodObject) {
+    return schema.shape as Record<string, z.ZodTypeAny>;
+  }
+  // Non-object root (e.g. an array) — wrap so MCP gets a single 'body' field.
+  return { body: schema };
+}
 
 // ─── Body transformers ───────────────────────────────────────
 
@@ -175,6 +191,7 @@ const BODY_TRANSFORMERS: Record<SchemaKind, (p: Record<string, any>) => Record<s
   year: (p) => p,
   date: (p) => p,
   generic: (p) => (typeof p.body === 'object' && p.body !== null ? (p.body as Record<string, unknown>) : p),
+  typed: (p) => p, // typed schemas pass through — fields match server expectation directly
 };
 
 // ─── MCP Server ──────────────────────────────────────────────
@@ -219,7 +236,9 @@ server.registerTool(
 
 let registered = 2; // built-in count
 for (const tool of GENERATED_TOOLS) {
-  const schema = SCHEMAS[tool.schemaKind];
+  const schema = tool.schemaKind === 'typed' && tool.typedRef
+    ? resolveTypedShape(tool.typedRef)
+    : SCHEMAS[tool.schemaKind];
   const transform = BODY_TRANSFORMERS[tool.schemaKind];
   server.registerTool(
     tool.name,
@@ -237,7 +256,11 @@ for (const tool of GENERATED_TOOLS) {
   registered++;
 }
 
-console.error(`[astroway-mcp/${MCP_VERSION}] registered ${registered} tools (base ${BASE_URL})`);
+// ─── Prompts ─────────────────────────────────────────────────
+
+const promptCount = registerAllPrompts(server);
+
+console.error(`[astroway-mcp/${MCP_VERSION}] registered ${registered} tools + ${promptCount} prompts (base ${BASE_URL})`);
 
 const transport = new StdioServerTransport();
 server.connect(transport).catch((err: unknown) => {
