@@ -206,9 +206,15 @@ const server = new McpServer({
 server.registerTool(
   'astroway_account_status',
   {
-    title: 'astroway_account_status',
+    title: 'Account Status',
     description: 'Check current API key status: tier, credit balance, rate limits, monthly cycle reset. Run this BEFORE invoking expensive endpoints (Tier 4+ at 100+ credits, Tier 6/7 at 500-5000 credits) to confirm the user has budget. Returns plain-text human-readable summary.',
     inputSchema: {},
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   async () => {
     const text = await fetchAccountStatus(BASE_URL, API_KEY);
@@ -219,10 +225,16 @@ server.registerTool(
 server.registerTool(
   'astroway_cost_estimate',
   {
-    title: 'astroway_cost_estimate',
+    title: 'Cost Estimate',
     description: 'Estimate the credit cost of one or more endpoints WITHOUT invoking them. Returns total + per-endpoint breakdown with tier annotations. Useful when planning multi-step workflows: estimate first, ask user confirmation, then invoke. Cache TTL 5 min.',
     inputSchema: {
       endpoints: z.array(z.string()).min(1).describe('Endpoint paths to estimate, e.g. ["/chart", "/synastry", "/reports/natal"]. Leading slash optional.'),
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
   },
   async ({ endpoints }) => {
@@ -243,9 +255,10 @@ for (const tool of GENERATED_TOOLS) {
   server.registerTool(
     tool.name,
     {
-      title: tool.name,
+      title: tool.title ?? tool.name,
       description: tool.description,
       inputSchema: schema,
+      annotations: tool.annotations,
     },
     async (params) => {
       const body = transform(params as Record<string, any>);

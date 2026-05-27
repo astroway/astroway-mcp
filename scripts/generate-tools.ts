@@ -28,6 +28,13 @@ type SchemaKind =
   | 'year' | 'date' | 'generic'
   | 'typed'; // ← new in v0.4
 
+interface ToolAnnotations {
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+}
+
 interface GeneratedTool {
   name: string;
   description: string;
@@ -38,6 +45,10 @@ interface GeneratedTool {
   tier?: string;
   /** Component name for typedSchemaKind — references an entry in TYPED_SCHEMAS map. */
   typedRef?: string;
+  /** Human-readable label (from OpenAPI op.summary) — falls back to name at registration. */
+  title?: string;
+  /** MCP tool annotations — see classifyAnnotations() for group rules. */
+  annotations: ToolAnnotations;
 }
 
 interface OpenAPIOperation {
@@ -169,6 +180,43 @@ function refToComponentName(ref: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * MCP tool annotation classifier (v0.5+).
+ *
+ * Rules:
+ *   - Webhooks → registers external callback → not read-only, not idempotent
+ *   - Reports / AI Reports → creates persistent server-side record → not read-only, not idempotent
+ *   - Real-time Streaming → opens connection → not read-only, not idempotent
+ *   - AI Interpretations / interpret_* / *_ai_* / AI & MCP → LLM nondeterminism → read-only, not idempotent
+ *   - Everything else → deterministic compute → read-only, idempotent
+ *
+ * destructiveHint stays false everywhere — no API endpoint deletes user data via this surface.
+ * openWorldHint is true for anything reaching LLM/streaming/external state.
+ */
+export function classifyAnnotations(group: string, toolName: string): ToolAnnotations {
+  const g = group.toLowerCase();
+  const n = toolName.toLowerCase();
+
+  if (g === 'webhooks') {
+    return { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+  }
+  if (g === 'reports' || g === 'ai reports') {
+    return { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+  }
+  if (g === 'real-time streaming') {
+    return { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+  }
+  if (
+    g === 'ai interpretations' ||
+    g === 'ai & mcp' ||
+    n.startsWith('interpret_') ||
+    n.includes('_ai_')
+  ) {
+    return { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+  }
+  return { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+}
+
 async function main(): Promise<void> {
   console.log(`[generate-tools] fetching OpenAPI from ${OPENAPI_URL}`);
   const res = await fetch(OPENAPI_URL);
@@ -236,8 +284,12 @@ async function main(): Promise<void> {
     const costInfo = costs.endpoints[path];
     if (costInfo) costAnnotated++;
 
+    const toolName = sanitizeName(path);
+    const annotations = classifyAnnotations(group, toolName);
+    const title = op.summary?.trim() || undefined;
+
     tools.push({
-      name: sanitizeName(path),
+      name: toolName,
       description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated),
       endpoint: path,
       schemaKind: kind,
@@ -245,6 +297,8 @@ async function main(): Promise<void> {
       cost: costInfo?.cost,
       tier: costInfo?.tier,
       typedRef,
+      title,
+      annotations,
     });
   }
 
@@ -309,6 +363,13 @@ export type SchemaKind =
   | 'year' | 'date' | 'generic'
   | 'typed';
 
+export interface ToolAnnotations {
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+}
+
 export interface GeneratedTool {
   name: string;
   description: string;
@@ -318,6 +379,8 @@ export interface GeneratedTool {
   cost?: number;
   tier?: string;
   typedRef?: string;
+  title?: string;
+  annotations: ToolAnnotations;
 }
 
 /**
@@ -333,10 +396,20 @@ export const GENERATED_TOOLS: readonly GeneratedTool[] = ${JSON.stringify(unique
 
   writeFileSync(outPath, fileBody, 'utf8');
 
+  // Annotation distribution for visibility
+  const annotationStats = unique.reduce<Record<string, number>>((acc, t) => {
+    const key = `ro=${t.annotations.readOnlyHint?'1':'0'} idem=${t.annotations.idempotentHint?'1':'0'} ow=${t.annotations.openWorldHint?'1':'0'}`;
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+  const titledCount = unique.filter((t) => t.title).length;
+
   console.log(`[generate-tools] wrote ${unique.length} tools → src/tools.generated.ts`);
   console.log(`[generate-tools] cost annotated: ${costAnnotated}/${unique.length}`);
+  console.log(`[generate-tools] titles from op.summary: ${titledCount}/${unique.length}`);
   console.log(`[generate-tools] typed schemas: ${typedCount} tools, ${usedComponents.size} components`);
   console.log(`[generate-tools] schema kinds: ${JSON.stringify(kindCounts)}`);
+  console.log(`[generate-tools] annotations: ${JSON.stringify(annotationStats)}`);
   console.log(`[generate-tools] skipped: ${JSON.stringify(skippedReason)}`);
 }
 
