@@ -83,16 +83,25 @@ export function printHelp(unknown?: string): void {
 }
 
 export function listTools(filter: string | undefined): void {
+  const flat = process.env.MCP_FLAT_TOOLS === '1' || process.env.MCP_FLAT_TOOLS === 'true';
   const f = filter?.toLowerCase();
-  const matches = GENERATED_TOOLS.filter((t) => !f || t.name.toLowerCase().includes(f) || t.title?.toLowerCase().includes(f));
-  process.stdout.write(`Registered tools: ${matches.length}${f ? ` (filter: ${filter})` : ''}\n\n`);
+  const matches = GENERATED_TOOLS.filter((t) =>
+    !f ||
+    t.name.toLowerCase().includes(f) ||
+    t.prefixedName.toLowerCase().includes(f) ||
+    t.title?.toLowerCase().includes(f),
+  );
+  const headerNote = flat ? ' (MCP_FLAT_TOOLS=1 — pre-v0.9 names)' : ' (v0.9 namespacing)';
+  process.stdout.write(`Registered tools: ${matches.length}${f ? ` (filter: ${filter})` : ''}${headerNote}\n\n`);
   for (const t of matches) {
-    const head = t.title && t.title !== t.name ? `${t.name} — ${t.title}` : t.name;
+    const displayName = flat ? t.name : t.prefixedName;
+    const head = t.title && t.title !== displayName ? `${displayName} — ${t.title}` : displayName;
     process.stdout.write(`${head}\n`);
+    if (!flat) process.stdout.write(`  flat alias: ${t.name}\n`);
     if (t.cost !== undefined) process.stdout.write(`  cost: ${t.cost} credits${t.tier ? ` (${t.tier})` : ''}\n`);
     process.stdout.write(`  endpoint: ${t.endpoint}\n`);
   }
-  // Built-ins
+  // Built-ins (already namespaced — naming unchanged in v0.9)
   if (!f || 'astroway_account_status'.includes(f)) {
     process.stdout.write(`astroway_account_status — Account Status (built-in)\n`);
   }
@@ -105,8 +114,11 @@ export function listTools(filter: string | undefined): void {
  * For `--call <name>`, look up the tool in the generated map and invoke its
  * underlying endpoint with the given body. The caller wires this against
  * src/index.ts's `callApi` helper to share retry / error semantics.
+ *
+ * Accepts BOTH the flat name (`chart`) and the namespaced name (`astroway_western_chart`)
+ * so users don't need to know which mode is active.
  */
 export function findToolEndpoint(toolName: string): string | null {
-  const t = GENERATED_TOOLS.find((x) => x.name === toolName);
+  const t = GENERATED_TOOLS.find((x) => x.name === toolName || x.prefixedName === toolName);
   return t ? t.endpoint : null;
 }

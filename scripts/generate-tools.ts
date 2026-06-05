@@ -37,6 +37,12 @@ interface ToolAnnotations {
 
 interface GeneratedTool {
   name: string;
+  /**
+   * v0.9+ — namespaced canonical tool name `astroway_<prefix>_<name>`.
+   * Server registers this by default; `MCP_FLAT_TOOLS=1` falls back to `name`
+   * for users transitioning from pre-v0.9.
+   */
+  prefixedName: string;
   description: string;
   endpoint: string;
   schemaKind: SchemaKind;
@@ -193,6 +199,66 @@ function refToComponentName(ref: string): string | null {
 }
 
 /**
+ * v0.9+ — group → namespace prefix used in `astroway_<prefix>_<tool>` naming.
+ * Manual overrides for ambiguous or multi-word groups; everything else falls
+ * back to the auto-derived first-word lowercase.
+ */
+const GROUP_PREFIX_OVERRIDES: Record<string, string> = {
+  'Core': 'western',
+  'Comparisons': 'relational',
+  'Prognostics': 'prognostics',
+  'Specialized Charts': 'specialized',
+  'Aspects & Points': 'aspects',
+  'Calendar & Cycles': 'calendar',
+  'Dignities & Receptions': 'dignities',
+  'Astro-Geography': 'geo',
+  'Modern Psychological': 'psychological',
+  'Evolutionary Astrology': 'evolutionary',
+  'Family Astrology': 'family',
+  'Pet Astrology': 'pet',
+  'Business Astrology': 'business',
+  'Financial Astrology': 'financial',
+  'Cosmobiology / Hamburg School': 'cosmobiology',
+  'Visualization': 'render',
+  'Real-time Streaming': 'stream',
+  'White-label': 'whitelabel',
+  'AI Reports': 'reports',
+  'AI Interpretations': 'ai',
+  'AI & MCP': 'mcp',
+  'MCP Advanced': 'mcp',
+  'Human Design': 'hd',
+  'BaZi (Four Pillars)': 'bazi',
+  'Mayan Calendars': 'mayan',
+  'Chinese — Zodiac & Feng Shui': 'chinese',
+  'Zi Wei Dou Shu (Purple Star) — MVP': 'ziwei',
+  'Destiny Matrix': 'destiny_matrix',
+  'I Ching (Standalone)': 'iching',
+  'Geomancy (Agrippa)': 'geomancy',
+  'Elder Futhark Runes': 'runes',
+  'Palmistry (Cheiro)': 'palmistry',
+};
+
+export function derivePrefix(group: string): string {
+  if (GROUP_PREFIX_OVERRIDES[group]) return GROUP_PREFIX_OVERRIDES[group];
+  // 'Numerology — Pythagorean' → 'numerology'
+  // 'Hellenistic — Brennan tradition' → 'hellenistic'
+  // 'Tarot — Rider-Waite-Smith' → 'tarot'
+  const head = group.split('—')[0].trim();
+  return head.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+/** Build the v0.9+ canonical name `astroway_<prefix>_<tool>` with duplicate-prefix collapse. */
+export function prefixToolName(originalName: string, group: string): string {
+  const prefix = derivePrefix(group);
+  // Avoid `astroway_vedic_vedic_dashas_…` when toolName already begins with the prefix.
+  const stripped = originalName.startsWith(prefix + '_') ? originalName.slice(prefix.length + 1) : originalName;
+  return `astroway_${prefix}_${stripped}`
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/_+/g, '_');
+}
+
+/**
  * MCP tool annotation classifier (v0.5+).
  *
  * Rules:
@@ -299,6 +365,7 @@ async function main(): Promise<void> {
     const toolName = sanitizeName(path);
     const annotations = classifyAnnotations(group, toolName);
     const title = op.summary?.trim() || undefined;
+    const prefixedName = prefixToolName(toolName, group);
 
     // v0.6 — detect inferred response data shape (api-calc Stage C, openapi v2.16+).
     // Only object-with-properties shapes are useful for MCP outputSchema (which
@@ -312,6 +379,7 @@ async function main(): Promise<void> {
 
     tools.push({
       name: toolName,
+      prefixedName,
       description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated),
       endpoint: path,
       schemaKind: kind,
@@ -418,6 +486,7 @@ export interface ToolAnnotations {
 
 export interface GeneratedTool {
   name: string;
+  prefixedName: string;
   description: string;
   endpoint: string;
   schemaKind: SchemaKind;

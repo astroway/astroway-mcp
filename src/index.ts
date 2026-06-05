@@ -63,6 +63,9 @@ const VERBOSE_LEGACY = process.env.ASTROWAY_VERBOSE === '1' || process.env.ASTRO
 const LOG_LEVEL_INITIAL = process.env.LOG_LEVEL
   ? levelFromEnv(process.env.LOG_LEVEL)
   : (VERBOSE_LEGACY ? 'debug' : 'error');
+// v0.9+ — register tools under `astroway_<group>_<name>` by default.
+// MCP_FLAT_TOOLS=1 keeps the pre-v0.9 flat names for users who haven't migrated yet.
+const FLAT_TOOLS = process.env.MCP_FLAT_TOOLS === '1' || process.env.MCP_FLAT_TOOLS === 'true';
 
 const log = new Logger(LOG_LEVEL_INITIAL, process.env.LOG_FILE);
 
@@ -346,8 +349,9 @@ for (const tool of GENERATED_TOOLS) {
   const transform = BODY_TRANSFORMERS[tool.schemaKind];
   const outputShape = tool.hasOutput ? resolveOutputShape(tool.name) : undefined;
   if (outputShape) outputRegistered++;
+  const registeredName = FLAT_TOOLS ? tool.name : tool.prefixedName;
   server.registerTool(
-    tool.name,
+    registeredName,
     {
       title: tool.title ?? tool.name,
       description: tool.description,
@@ -384,6 +388,7 @@ const resourceCount = registerAllResources(server);
 log.info(`registered ${registered} tools (${outputRegistered} with outputSchema) + ${promptCount} prompts + ${resourceCount} resources`, {
   base: BASE_URL,
   level: log.getLevel(),
+  naming: FLAT_TOOLS ? 'flat (legacy MCP_FLAT_TOOLS=1)' : 'astroway_<group>_<tool>',
 });
 
 // Graceful shutdown: close transport cleanly so MCP clients don't see a torn pipe.
