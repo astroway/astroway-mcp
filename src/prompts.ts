@@ -50,6 +50,24 @@ const birthDataArgs = {
 
 // ─── Prompt definitions ──────────────────────────────────────────────────
 
+/** Static catalogue used by `astroway-mcp --list-prompts`. Keep in sync with registerAllPrompts(). */
+export function LIST_PROMPT_NAMES(): readonly string[] {
+  return [
+    'natal-chart-summary',
+    'synastry-analysis',
+    'transit-coach',
+    'daily-horoscope',
+    'vedic-kundli-summary',
+    'tarot-three-card',
+    'human-design-bodygraph',
+    'bazi-four-pillars',
+    'numerology-life-path',
+    'lunar-phase-day',
+    'retrograde-warning',
+    'cost-aware-multistep-planner',
+  ];
+}
+
 export function registerAllPrompts(server: McpServer): number {
   let count = 0;
 

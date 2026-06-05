@@ -12,21 +12,64 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 
 import { GENERATED_TOOLS, TYPED_SCHEMAS, OUTPUT_SCHEMAS, type SchemaKind } from './tools.generated.js';
+import { REFERENCE_RESOURCES } from './resources.generated.js';
 import { fetchAccountStatus } from './tools/account-status.js';
 import { loadCostManifest, estimateOne, formatEstimate } from './tools/cost-estimate.js';
 import { fetchWithRetry } from './retry.js';
 import { registerAllPrompts } from './prompts.js';
 import { registerAllResources } from './resources.js';
 import { MCP_VERSION } from './version.js';
+import { Logger, levelFromEnv } from './logger.js';
+import { parseArgs, printVersion, printHelp, listTools, findToolEndpoint } from './cli.js';
+
+// ─── CLI dispatch (runs before any MCP setup) ────────────────
+
+const cli = parseArgs(process.argv);
+
+if (cli.mode === 'version') {
+  printVersion();
+  process.exit(0);
+}
+if (cli.mode === 'help') {
+  printHelp(cli.unknown);
+  process.exit(cli.unknown ? 1 : 0);
+}
+if (cli.mode === 'list-tools') {
+  listTools(cli.filter);
+  process.exit(0);
+}
+if (cli.mode === 'list-resources') {
+  process.stdout.write(`MCP Resources: ${Object.keys(REFERENCE_RESOURCES).length}\n\n`);
+  for (const [slug, info] of Object.entries(REFERENCE_RESOURCES)) {
+    process.stdout.write(`astroway://reference/${slug} — ${info.title} (source: ${info.apiPath})\n`);
+  }
+  process.exit(0);
+}
+if (cli.mode === 'list-prompts') {
+  // Lazy-load prompts module to print the catalogue without booting the server.
+  const { LIST_PROMPT_NAMES } = await import('./prompts.js');
+  const names = LIST_PROMPT_NAMES();
+  process.stdout.write(`MCP Prompts: ${names.length}\n\n`);
+  for (const n of names) process.stdout.write(`${n}\n`);
+  process.exit(0);
+}
+
+// ─── Env config ──────────────────────────────────────────────
 
 const API_KEY = process.env.ASTROWAY_API_KEY ?? '';
 const BASE_URL = process.env.ASTROWAY_BASE_URL ?? 'https://api.astroway.info/v1';
-const VERBOSE = process.env.ASTROWAY_VERBOSE === '1' || process.env.ASTROWAY_VERBOSE === 'true';
+// LOG_LEVEL takes precedence; ASTROWAY_VERBOSE=1 maps to debug for back-compat.
+const VERBOSE_LEGACY = process.env.ASTROWAY_VERBOSE === '1' || process.env.ASTROWAY_VERBOSE === 'true';
+const LOG_LEVEL_INITIAL = process.env.LOG_LEVEL
+  ? levelFromEnv(process.env.LOG_LEVEL)
+  : (VERBOSE_LEGACY ? 'debug' : 'error');
+
+const log = new Logger(LOG_LEVEL_INITIAL, process.env.LOG_FILE);
 
 if (!API_KEY) {
-  console.error('Error: ASTROWAY_API_KEY environment variable is required.');
-  console.error('Get a key at https://api.astroway.info/dashboard/sign-up — 10,000 credits/month free.');
-  console.error('Then set: export ASTROWAY_API_KEY="aw_live_..." (or aw_test_... for sandbox).');
+  log.error('ASTROWAY_API_KEY environment variable is required.');
+  log.error('Get a key at https://api.astroway.info/dashboard/sign-up — 10,000 credits/month free.');
+  log.error('Then set: export ASTROWAY_API_KEY="aw_live_..." (or aw_test_... for sandbox).');
   process.exit(1);
 }
 
@@ -41,7 +84,7 @@ interface CallResult {
 
 async function callApi(endpoint: string, body: Record<string, unknown>): Promise<CallResult> {
   const url = `${BASE_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
-  if (VERBOSE) console.error(`[astroway-mcp] → POST ${url}\n  body: ${JSON.stringify(body).slice(0, 500)}`);
+  log.debug(`POST ${url}`, { body: JSON.stringify(body).slice(0, 500) });
   try {
     const res = await fetchWithRetry(url, {
       method: 'POST',
@@ -53,7 +96,7 @@ async function callApi(endpoint: string, body: Record<string, unknown>): Promise
       body: JSON.stringify(body),
     });
     const json = (await res.json()) as { ok?: boolean; data?: unknown; error?: { code?: string; message?: string } };
-    if (VERBOSE) console.error(`[astroway-mcp] ← ${res.status} ${res.statusText}`);
+    log.debug(`← ${res.status} ${res.statusText}`);
     if (!res.ok || !json.ok) {
       const err = json.error ?? {};
       const code = err.code ?? 'UNKNOWN';
@@ -72,6 +115,26 @@ async function callApi(endpoint: string, body: Record<string, unknown>): Promise
   } catch (e: any) {
     return { text: `Network error calling ${endpoint}: ${e?.message ?? 'unknown'}. Check your connection or ASTROWAY_BASE_URL.` };
   }
+}
+
+// ─── --call CLI dispatch (after callApi is defined) ──────────
+
+if (cli.mode === 'call') {
+  const endpoint = findToolEndpoint(cli.toolName ?? '');
+  if (!endpoint) {
+    process.stderr.write(`Tool not found: ${cli.toolName}. Run --list-tools to see all names.\n`);
+    process.exit(1);
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(cli.json ?? '{}') as Record<string, unknown>;
+  } catch (e) {
+    process.stderr.write(`Invalid --json: ${(e as Error).message}\n`);
+    process.exit(1);
+  }
+  const result = await callApi(endpoint, body);
+  process.stdout.write(result.text + '\n');
+  process.exit(0);
 }
 
 // ─── Schema shapes (one per SchemaKind) ──────────────────────
@@ -203,10 +266,19 @@ const BODY_TRANSFORMERS: Record<SchemaKind, (p: Record<string, any>) => Record<s
 
 // ─── MCP Server ──────────────────────────────────────────────
 
-const server = new McpServer({
-  name: 'astroway',
-  version: MCP_VERSION,
-});
+const server = new McpServer(
+  {
+    name: 'astroway',
+    version: MCP_VERSION,
+  },
+  {
+    // Declare logging capability so MCP clients (Claude Desktop debug panel,
+    // Inspector, etc.) can subscribe to logging notifications and call
+    // logging/setLevel to dynamically change verbosity at runtime.
+    capabilities: { logging: {} },
+  },
+);
+log.attachMcp({ sendLoggingMessage: server.server.sendLoggingMessage.bind(server.server) });
 
 // ─── Built-in tools (handle-coded) ───────────────────────────
 
@@ -309,10 +381,22 @@ for (const tool of GENERATED_TOOLS) {
 const promptCount = registerAllPrompts(server);
 const resourceCount = registerAllResources(server);
 
-console.error(`[astroway-mcp/${MCP_VERSION}] registered ${registered} tools (${outputRegistered} with outputSchema) + ${promptCount} prompts + ${resourceCount} resources (base ${BASE_URL})`);
+log.info(`registered ${registered} tools (${outputRegistered} with outputSchema) + ${promptCount} prompts + ${resourceCount} resources`, {
+  base: BASE_URL,
+  level: log.getLevel(),
+});
+
+// Graceful shutdown: close transport cleanly so MCP clients don't see a torn pipe.
+function shutdown(reason: string): void {
+  log.info(`shutting down: ${reason}`);
+  transport.close().catch(() => { /* drop */ });
+  process.exit(0);
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 const transport = new StdioServerTransport();
 server.connect(transport).catch((err: unknown) => {
-  console.error('[astroway-mcp] failed to start:', err);
+  log.error('failed to start', { error: (err as Error)?.message ?? String(err) });
   process.exit(1);
 });
