@@ -141,64 +141,84 @@ if (cli.mode === 'call') {
 }
 
 // ─── Schema shapes (one per SchemaKind) ──────────────────────
+//
+// v0.9.1+ — tight bounds on all numeric/string fields so MCP clients catch
+// invalid input at validation time instead of silently computing for "the
+// equator off Ghana at UTC". No more `.default(0)` on lat/lon/tzOffset —
+// users must provide real birth coordinates.
 
-const chartShape = {
-  date: z.string().describe('Birth date YYYY-MM-DD'),
-  time: z.string().describe('Birth time HH:mm:ss (local)'),
-  timezoneOffset: z.number().default(0).describe('UTC offset in hours (e.g. 3 for UTC+3, -5 for EST)'),
-  latitude: z.number().default(0).describe('Birth latitude in decimal degrees'),
-  longitude: z.number().default(0).describe('Birth longitude in decimal degrees'),
-  houseSystem: z.string().optional().describe('House system: P=Placidus (default), K=Koch, W=Whole Sign, E=Equal'),
-  city: z.string().optional().describe('City name (display only)'),
-} as const;
+const DATE_RE  = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE  = /^\d{2}:\d{2}(:\d{2})?$/;
 
-const twoChartShape = {
-  chart1_date: z.string().describe('Person 1 birth date YYYY-MM-DD'),
-  chart1_time: z.string().describe('Person 1 birth time HH:mm:ss'),
-  chart1_tz: z.number().default(0).describe('Person 1 UTC offset in hours'),
-  chart1_lat: z.number().default(0).describe('Person 1 latitude'),
-  chart1_lon: z.number().default(0).describe('Person 1 longitude'),
-  chart2_date: z.string().describe('Person 2 birth date YYYY-MM-DD'),
-  chart2_time: z.string().describe('Person 2 birth time HH:mm:ss'),
-  chart2_tz: z.number().default(0).describe('Person 2 UTC offset in hours'),
-  chart2_lat: z.number().default(0).describe('Person 2 latitude'),
-  chart2_lon: z.number().default(0).describe('Person 2 longitude'),
-  language: z.enum(['uk', 'en']).optional().describe('Output language for AI interpretations (en default)'),
-} as const;
+/** Swiss Ephemeris house system letter codes — superset of what api-calc accepts. */
+const HOUSE_SYSTEM_CODES = ['P', 'K', 'O', 'W', 'E', 'R', 'C', 'T', 'M', 'B', 'H', 'U', 'V', 'X', 'Y', 'Z', 'L', 'S'] as const;
 
-const chartTargetShape = {
-  ...chartShape,
-  targetDate: z.string().optional().describe('Target date YYYY-MM-DD for transit/progression/return/dasha lookup (default: today)'),
-  targetTime: z.string().optional().describe('Target time HH:mm:ss (default 12:00:00 UTC)'),
-  targetTzOffset: z.number().optional().describe('Target UTC offset in hours (default 0)'),
-} as const;
+/** 21-code superset honored by /horoscope/* + /reports/ai/* + /interpret/* localization. */
+const LANGUAGE_CODES = ['uk', 'en', 'de', 'ru', 'pl', 'es', 'pt', 'hi', 'fr', 'ko', 'it', 'ja', 'id', 'tr', 'nl', 'ro', 'cs', 'vi', 'ar', 'el', 'hu'] as const;
 
 const SIGN_ENUM = z.enum([
   'aries', 'taurus', 'gemini', 'cancer', 'leo', 'virgo',
   'libra', 'scorpio', 'sagittarius', 'capricorn', 'aquarius', 'pisces',
 ]);
 
+const dateField    = () => z.string().regex(DATE_RE, 'Use YYYY-MM-DD').describe('Date YYYY-MM-DD (e.g. 1990-05-15)');
+const timeField    = () => z.string().regex(TIME_RE, 'Use HH:mm or HH:mm:ss').describe('Time HH:mm:ss in local civil time at birth place');
+const latField     = () => z.number().min(-90).max(90).describe('Latitude in decimal degrees, range -90..+90 (e.g. 50.45)');
+const lonField     = () => z.number().min(-180).max(180).describe('Longitude in decimal degrees, range -180..+180 (positive=east, e.g. 30.52)');
+const tzField      = () => z.number().min(-12).max(14).describe('UTC offset in hours at the moment, range -12..+14 (use 0 for UTC, 3 for EEST, -5 for EST)');
+
+const chartShape = {
+  date: dateField().describe('Birth date YYYY-MM-DD'),
+  time: timeField().describe('Birth time HH:mm:ss (local civil time at the place of birth)'),
+  timezoneOffset: tzField().describe('UTC offset in hours at birth (e.g. 3 for EEST, -5 for EST, 0 for UTC)'),
+  latitude: latField().describe('Birth latitude in decimal degrees, range -90..+90'),
+  longitude: lonField().describe('Birth longitude in decimal degrees, range -180..+180 (positive=east)'),
+  houseSystem: z.enum(HOUSE_SYSTEM_CODES).optional().describe('House system letter: P=Placidus (default), K=Koch, O=Porphyry, W=Whole Sign, E=Equal (Asc), R=Regiomontanus, C=Campanus, T=Topocentric, M=Morinus, B=Alcabitius'),
+  city: z.string().optional().describe('City name (display only — server does not geocode)'),
+} as const;
+
+const twoChartShape = {
+  chart1_date: dateField().describe('Person 1 birth date YYYY-MM-DD'),
+  chart1_time: timeField().describe('Person 1 birth time HH:mm:ss (local)'),
+  chart1_tz:   tzField().describe('Person 1 UTC offset in hours at birth'),
+  chart1_lat:  latField().describe('Person 1 birth latitude in decimal degrees'),
+  chart1_lon:  lonField().describe('Person 1 birth longitude in decimal degrees'),
+  chart2_date: dateField().describe('Person 2 birth date YYYY-MM-DD'),
+  chart2_time: timeField().describe('Person 2 birth time HH:mm:ss (local)'),
+  chart2_tz:   tzField().describe('Person 2 UTC offset in hours at birth'),
+  chart2_lat:  latField().describe('Person 2 birth latitude in decimal degrees'),
+  chart2_lon:  lonField().describe('Person 2 birth longitude in decimal degrees'),
+  language:    z.enum(LANGUAGE_CODES).optional().describe('Output language for AI interpretations (default en)'),
+} as const;
+
+const chartTargetShape = {
+  ...chartShape,
+  targetDate:     dateField().optional().describe('Target date YYYY-MM-DD for transit/progression/return/dasha lookup (default: today)'),
+  targetTime:     timeField().optional().describe('Target time HH:mm:ss (default 12:00:00 UTC)'),
+  targetTzOffset: tzField().optional().describe('Target UTC offset in hours (default 0 — UTC)'),
+} as const;
+
 const horoscopeSignShape = {
-  sign: SIGN_ENUM.describe('Zodiac sign'),
-  date: z.string().optional().describe('Date YYYY-MM-DD (default: today)'),
-  language: z.enum(['uk', 'en']).optional().describe('Output language (en default)'),
+  sign:     SIGN_ENUM.describe('Zodiac sign (lowercase): aries, taurus, …'),
+  date:     dateField().optional().describe('Date YYYY-MM-DD (default: today)'),
+  language: z.enum(LANGUAGE_CODES).optional().describe('Output language (default en)'),
 } as const;
 
 const horoscopeCompatShape = {
-  sign1: SIGN_ENUM.describe('First zodiac sign'),
-  sign2: SIGN_ENUM.describe('Second zodiac sign'),
-  language: z.enum(['uk', 'en']).optional().describe('Output language (en default)'),
+  sign1:    SIGN_ENUM.describe('First zodiac sign (lowercase)'),
+  sign2:    SIGN_ENUM.describe('Second zodiac sign (lowercase)'),
+  language: z.enum(LANGUAGE_CODES).optional().describe('Output language (default en)'),
 } as const;
 
 const yearShape = {
-  year: z.number().int().describe('Year (e.g. 2026)'),
+  year: z.number().int().min(1900).max(2100).describe('Year, range 1900..2100 (Swiss Ephemeris precision window)'),
 } as const;
 
 const dateShape = {
-  date: z.string().describe('Date YYYY-MM-DD'),
-  latitude: z.number().optional().describe('Latitude (some date-only endpoints accept location)'),
-  longitude: z.number().optional().describe('Longitude'),
-  timezoneOffset: z.number().optional().describe('UTC offset in hours'),
+  date:           dateField().describe('Date YYYY-MM-DD'),
+  latitude:       latField().optional().describe('Latitude (some date-only endpoints accept location for sunrise/sunset/panchang etc.)'),
+  longitude:      lonField().optional().describe('Longitude (paired with latitude)'),
+  timezoneOffset: tzField().optional().describe('UTC offset in hours (default 0 — UTC)'),
 } as const;
 
 const genericShape = {
