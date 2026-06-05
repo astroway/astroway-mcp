@@ -16,6 +16,7 @@ import { fetchAccountStatus } from './tools/account-status.js';
 import { loadCostManifest, estimateOne, formatEstimate } from './tools/cost-estimate.js';
 import { fetchWithRetry } from './retry.js';
 import { registerAllPrompts } from './prompts.js';
+import { registerAllResources } from './resources.js';
 import { MCP_VERSION } from './version.js';
 
 const API_KEY = process.env.ASTROWAY_API_KEY ?? '';
@@ -303,11 +304,12 @@ for (const tool of GENERATED_TOOLS) {
   registered++;
 }
 
-// ─── Prompts ─────────────────────────────────────────────────
+// ─── Prompts + Resources ─────────────────────────────────────
 
 const promptCount = registerAllPrompts(server);
+const resourceCount = registerAllResources(server);
 
-console.error(`[astroway-mcp/${MCP_VERSION}] registered ${registered} tools (${outputRegistered} with outputSchema) + ${promptCount} prompts (base ${BASE_URL})`);
+console.error(`[astroway-mcp/${MCP_VERSION}] registered ${registered} tools (${outputRegistered} with outputSchema) + ${promptCount} prompts + ${resourceCount} resources (base ${BASE_URL})`);
 
 const transport = new StdioServerTransport();
 server.connect(transport).catch((err: unknown) => {
