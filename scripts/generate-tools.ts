@@ -49,6 +49,11 @@ interface GeneratedTool {
   title?: string;
   /** MCP tool annotations — see classifyAnnotations() for group rules. */
   annotations: ToolAnnotations;
+  /**
+   * v0.6+ — when true, the OUTPUT_SCHEMAS map has a Zod schema for this tool's
+   * response data shape. MCP server registers it as the tool's outputSchema.
+   */
+  hasOutput?: boolean;
 }
 
 interface OpenAPIOperation {
@@ -66,6 +71,13 @@ interface OpenAPIOperation {
       };
     };
   };
+  responses?: Record<string, {
+    content?: {
+      'application/json'?: {
+        schema?: Record<string, any>;
+      };
+    };
+  }>;
 }
 
 interface OpenAPIDoc {
@@ -288,6 +300,16 @@ async function main(): Promise<void> {
     const annotations = classifyAnnotations(group, toolName);
     const title = op.summary?.trim() || undefined;
 
+    // v0.6 — detect inferred response data shape (api-calc Stage C, openapi v2.16+).
+    // Only object-with-properties shapes are useful for MCP outputSchema (which
+    // requires a ZodRawShape, i.e. an object's field map). Skip arrays/scalars/opaque.
+    const dataSchema = op.responses?.['200']?.content?.['application/json']?.schema?.properties?.data;
+    const hasOutput =
+      !!dataSchema &&
+      dataSchema.type === 'object' &&
+      dataSchema.properties &&
+      Object.keys(dataSchema.properties).length > 0;
+
     tools.push({
       name: toolName,
       description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated),
@@ -299,7 +321,26 @@ async function main(): Promise<void> {
       typedRef,
       title,
       annotations,
+      hasOutput,
     });
+  }
+
+  // v0.6 — collect inferred output Zod sources keyed by tool name.
+  const outputZodByTool: Record<string, string> = {};
+  for (const t of tools) {
+    if (!t.hasOutput) continue;
+    const op = doc.paths[t.endpoint]?.post;
+    const dataSchema = op?.responses?.['200']?.content?.['application/json']?.schema?.properties?.data;
+    if (!dataSchema) continue;
+    try {
+      // dataSchema is fully inlined already (api-calc emits inferred JSON Schema, no $refs).
+      const src = jsonSchemaToZod(dataSchema as any);
+      outputZodByTool[t.name] = src;
+    } catch (e: any) {
+      console.warn(`[generate-tools] output-schema convert failed for ${t.name}: ${e?.message}`);
+      // Strip flag so MCP doesn't try to register a non-existent OUTPUT_SCHEMAS entry.
+      t.hasOutput = false;
+    }
   }
 
   // Dedupe by tool name (sanitized path).
@@ -353,6 +394,11 @@ async function main(): Promise<void> {
     return `  ${JSON.stringify(name)}: ${src},`;
   });
 
+  // Emit OUTPUT_SCHEMAS map keyed by tool name → Zod schema for response data.
+  const outputSchemaEntries = Object.entries(outputZodByTool)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, src]) => `  ${JSON.stringify(name)}: ${src},`);
+
   const fileBody = `${banner}
 
 import { z } from 'zod';
@@ -381,6 +427,7 @@ export interface GeneratedTool {
   typedRef?: string;
   title?: string;
   annotations: ToolAnnotations;
+  hasOutput?: boolean;
 }
 
 /**
@@ -389,6 +436,16 @@ export interface GeneratedTool {
  */
 export const TYPED_SCHEMAS: Record<string, z.ZodTypeAny> = {
 ${typedSchemaEntries.join('\n')}
+};
+
+/**
+ * Output schemas inferred from /v1/openapi.json's responses[200].schema.properties.data
+ * (api-calc Stage C, openapi v2.16+). Keyed by tool name. Used as MCP outputSchema for
+ * tools with hasOutput:true — gives LLMs typed access to response field shapes and
+ * enables structuredContent in tool responses.
+ */
+export const OUTPUT_SCHEMAS: Record<string, z.ZodTypeAny> = {
+${outputSchemaEntries.join('\n')}
 };
 
 export const GENERATED_TOOLS: readonly GeneratedTool[] = ${JSON.stringify(unique, null, 2)} as const;
@@ -404,10 +461,13 @@ export const GENERATED_TOOLS: readonly GeneratedTool[] = ${JSON.stringify(unique
   }, {});
   const titledCount = unique.filter((t) => t.title).length;
 
+  const outputCount = unique.filter((t) => t.hasOutput).length;
+
   console.log(`[generate-tools] wrote ${unique.length} tools → src/tools.generated.ts`);
   console.log(`[generate-tools] cost annotated: ${costAnnotated}/${unique.length}`);
   console.log(`[generate-tools] titles from op.summary: ${titledCount}/${unique.length}`);
-  console.log(`[generate-tools] typed schemas: ${typedCount} tools, ${usedComponents.size} components`);
+  console.log(`[generate-tools] typed input schemas: ${typedCount} tools, ${usedComponents.size} components`);
+  console.log(`[generate-tools] typed output schemas: ${outputCount}/${unique.length}`);
   console.log(`[generate-tools] schema kinds: ${JSON.stringify(kindCounts)}`);
   console.log(`[generate-tools] annotations: ${JSON.stringify(annotationStats)}`);
   console.log(`[generate-tools] skipped: ${JSON.stringify(skippedReason)}`);

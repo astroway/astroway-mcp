@@ -11,7 +11,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-import { GENERATED_TOOLS, TYPED_SCHEMAS, type SchemaKind } from './tools.generated.js';
+import { GENERATED_TOOLS, TYPED_SCHEMAS, OUTPUT_SCHEMAS, type SchemaKind } from './tools.generated.js';
 import { fetchAccountStatus } from './tools/account-status.js';
 import { loadCostManifest, estimateOne, formatEstimate } from './tools/cost-estimate.js';
 import { fetchWithRetry } from './retry.js';
@@ -31,7 +31,14 @@ if (!API_KEY) {
 
 // ─── HTTP caller ─────────────────────────────────────────────
 
-async function callApi(endpoint: string, body: Record<string, unknown>): Promise<string> {
+interface CallResult {
+  /** Pretty-printed text representation for the LLM's content channel. */
+  text: string;
+  /** Parsed `data` payload, or undefined on error/network failure. */
+  structured?: unknown;
+}
+
+async function callApi(endpoint: string, body: Record<string, unknown>): Promise<CallResult> {
   const url = `${BASE_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
   if (VERBOSE) console.error(`[astroway-mcp] → POST ${url}\n  body: ${JSON.stringify(body).slice(0, 500)}`);
   try {
@@ -48,7 +55,6 @@ async function callApi(endpoint: string, body: Record<string, unknown>): Promise
     if (VERBOSE) console.error(`[astroway-mcp] ← ${res.status} ${res.statusText}`);
     if (!res.ok || !json.ok) {
       const err = json.error ?? {};
-      // Helpful hints based on error code
       const code = err.code ?? 'UNKNOWN';
       const message = err.message ?? 'Unknown error';
       let hint = '';
@@ -59,11 +65,11 @@ async function callApi(endpoint: string, body: Record<string, unknown>): Promise
       } else if (code === 'INVALID_KEY' || res.status === 401) {
         hint = '\n\nHint: API key invalid or revoked. Generate a new one at https://api.astroway.info/dashboard/keys.';
       }
-      return `Error ${res.status} (${code}): ${message}${hint}`;
+      return { text: `Error ${res.status} (${code}): ${message}${hint}` };
     }
-    return JSON.stringify(json.data, null, 2);
+    return { text: JSON.stringify(json.data, null, 2), structured: json.data };
   } catch (e: any) {
-    return `Network error calling ${endpoint}: ${e?.message ?? 'unknown'}. Check your connection or ASTROWAY_BASE_URL.`;
+    return { text: `Network error calling ${endpoint}: ${e?.message ?? 'unknown'}. Check your connection or ASTROWAY_BASE_URL.` };
   }
 }
 
@@ -246,24 +252,52 @@ server.registerTool(
 
 // ─── Generated tools ─────────────────────────────────────────
 
+/**
+ * For tools with hasOutput, return the OUTPUT_SCHEMAS entry as a ZodRawShape
+ * (i.e. the .shape of a ZodObject). Returns undefined when the schema isn't
+ * an object (rare — generator filters non-object data shapes earlier).
+ */
+function resolveOutputShape(toolName: string): Record<string, z.ZodTypeAny> | undefined {
+  const schema = OUTPUT_SCHEMAS[toolName];
+  if (!schema) return undefined;
+  if (schema instanceof z.ZodObject) return schema.shape as Record<string, z.ZodTypeAny>;
+  return undefined;
+}
+
 let registered = 2; // built-in count
+let outputRegistered = 0;
 for (const tool of GENERATED_TOOLS) {
   const schema = tool.schemaKind === 'typed' && tool.typedRef
     ? resolveTypedShape(tool.typedRef)
     : SCHEMAS[tool.schemaKind];
   const transform = BODY_TRANSFORMERS[tool.schemaKind];
+  const outputShape = tool.hasOutput ? resolveOutputShape(tool.name) : undefined;
+  if (outputShape) outputRegistered++;
   server.registerTool(
     tool.name,
     {
       title: tool.title ?? tool.name,
       description: tool.description,
       inputSchema: schema,
+      ...(outputShape ? { outputSchema: outputShape } : {}),
       annotations: tool.annotations,
     },
     async (params) => {
       const body = transform(params as Record<string, any>);
-      const text = await callApi(tool.endpoint, body);
-      return { content: [{ type: 'text' as const, text }] };
+      const result = await callApi(tool.endpoint, body);
+      const response: {
+        content: { type: 'text'; text: string }[];
+        structuredContent?: { [x: string]: unknown };
+      } = {
+        content: [{ type: 'text' as const, text: result.text }],
+      };
+      // Only attach structuredContent when the tool advertises an outputSchema —
+      // MCP clients validate structuredContent against outputSchema, so omitting
+      // both keeps error responses (text-only) from failing validation.
+      if (outputShape && result.structured && typeof result.structured === 'object' && !Array.isArray(result.structured)) {
+        response.structuredContent = result.structured as { [x: string]: unknown };
+      }
+      return response;
     },
   );
   registered++;
@@ -273,7 +307,7 @@ for (const tool of GENERATED_TOOLS) {
 
 const promptCount = registerAllPrompts(server);
 
-console.error(`[astroway-mcp/${MCP_VERSION}] registered ${registered} tools + ${promptCount} prompts (base ${BASE_URL})`);
+console.error(`[astroway-mcp/${MCP_VERSION}] registered ${registered} tools (${outputRegistered} with outputSchema) + ${promptCount} prompts (base ${BASE_URL})`);
 
 const transport = new StdioServerTransport();
 server.connect(transport).catch((err: unknown) => {
