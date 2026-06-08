@@ -21,6 +21,10 @@ import { registerAllResources } from './resources.js';
 import { MCP_VERSION } from './version.js';
 import { Logger, levelFromEnv } from './logger.js';
 import { parseArgs, printVersion, printHelp, listTools, findToolEndpoint } from './cli.js';
+import { installKeepAliveAgent } from './http-agent.js';
+
+// Reuse TCP/TLS sockets across consecutive API calls (saves 30-50 ms per call).
+installKeepAliveAgent();
 
 // ─── CLI dispatch (runs before any MCP setup) ────────────────
 

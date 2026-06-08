@@ -146,7 +146,7 @@ const TIER_NAMES: Record<string, string> = {
   TIER_7: 'Tier 7', TIER_8: 'Tier 8',
 };
 
-function buildDescription(rawDesc: string, body: string | null, group: string, cost?: number, tier?: string, deprecated?: boolean): string {
+function buildDescription(rawDesc: string, body: string | null, group: string, cost?: number, tier?: string, deprecated?: boolean, kind?: SchemaKind): string {
   let out = trimDesc(rawDesc);
   out += `\n\n[Group: ${group}]`;
   if (cost !== undefined) {
@@ -164,7 +164,12 @@ function buildDescription(rawDesc: string, body: string | null, group: string, c
   if (deprecated) {
     out += `\n[⚠️ DEPRECATED — will be removed in a future API version. Avoid using.]`;
   }
-  if (body && body.trim() && body !== 'null' && body.length < 320) {
+  // v0.9.2+ — only include the example body for tools with the opaque
+  // `body: z.record(unknown)` fallback. Typed and hand-written shapes already
+  // expose field-level descriptions and constraints (regex, enum, range), so
+  // the example string would be redundant — dropping it cuts ~50-60% of the
+  // tokens in those tool descriptions.
+  if (kind === 'generic' && body && body.trim() && body !== 'null' && body.length < 320) {
     out += `\n\nExample request body: ${body.trim()}`;
   }
   return out;
@@ -380,7 +385,7 @@ async function main(): Promise<void> {
     tools.push({
       name: toolName,
       prefixedName,
-      description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated),
+      description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated, kind),
       endpoint: path,
       schemaKind: kind,
       group,

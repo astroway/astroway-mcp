@@ -29,12 +29,18 @@ export async function loadCostManifest(baseUrl: string): Promise<CostManifest> {
       }
     }
   } catch {
-    // fall through to empty fallback
+    // fall through to non-cached fallback
   }
-  // Fallback — empty manifest, will return "unknown" per endpoint
-  cached = { endpoints: {} };
-  cachedAt = now;
-  return cached;
+  // Fallback — return an empty manifest WITHOUT caching.
+  // Caching the empty fallback would lock in "no cost data" for 5 min after
+  // a transient network blip; instead we let the next call retry the fetch.
+  return { endpoints: {} };
+}
+
+/** Test-only: clears the in-process cache so unit tests can re-stub fetch. */
+export function _clearCostCache(): void {
+  cached = null;
+  cachedAt = 0;
 }
 
 export interface CostEstimateResult {
