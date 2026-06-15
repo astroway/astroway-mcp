@@ -160,6 +160,11 @@ function buildDescription(rawDesc: string, body: string | null, group: string, c
       costLine += ` ⚠️ Heavy — confirm with user before invoking.`;
     }
     out += `\n${costLine}`;
+  } else {
+    // v0.10+ — F14: every tool gets an explicit cost line. Missing from the
+    // public manifest does NOT mean free; it usually means admin/premium-only
+    // and the cost is gated by the user's plan rather than per-endpoint.
+    out += `\n[Cost: see your plan — endpoint not in the public credit manifest]`;
   }
   if (deprecated) {
     out += `\n[⚠️ DEPRECATED — will be removed in a future API version. Avoid using.]`;

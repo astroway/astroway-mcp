@@ -80,6 +80,21 @@ if (!API_KEY) {
   process.exit(1);
 }
 
+// v0.10+ — F20: warn loudly when the user pointed at a non-default API host.
+// Mistyped BASE_URL or stale staging URL is a classic source of "everything
+// silently broken" bugs that surfaces only in production results.
+const KNOWN_BASE_URLS: ReadonlySet<string> = new Set([
+  'https://api.astroway.info/v1',
+  'https://staging-api.astroway.info/v1',
+]);
+if (!KNOWN_BASE_URLS.has(BASE_URL)) {
+  log.warn(
+    `ASTROWAY_BASE_URL points to a non-default host: ${BASE_URL}. ` +
+    `Make sure this is intentional — chart calculations and AI interpretations ` +
+    `may differ from production. Canonical host is https://api.astroway.info/v1.`,
+  );
+}
+
 // ─── HTTP caller ─────────────────────────────────────────────
 
 interface CallResult {
@@ -334,7 +349,17 @@ server.registerTool(
     title: 'Cost Estimate',
     description: 'Estimate the credit cost of one or more endpoints WITHOUT invoking them. Returns total + per-endpoint breakdown with tier annotations. Useful when planning multi-step workflows: estimate first, ask user confirmation, then invoke. Cache TTL 5 min.',
     inputSchema: {
-      endpoints: z.array(z.string()).min(1).describe('Endpoint paths to estimate, e.g. ["/chart", "/synastry", "/reports/natal"]. Leading slash optional.'),
+      // v0.10+ — F23: example arrays surfaced to MCP clients via Zod meta.
+      // Compatible MCP clients render these as input suggestions / autocomplete.
+      endpoints: z.array(z.string()).min(1)
+        .describe('Endpoint paths to estimate, e.g. ["/chart", "/synastry", "/reports/natal"]. Leading slash optional.')
+        .meta({
+          examples: [
+            ['/chart'],
+            ['/chart', '/synastry'],
+            ['/chart', '/transits', '/reports/natal'],
+          ],
+        }),
     },
     annotations: {
       readOnlyHint: true,

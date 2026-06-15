@@ -59,6 +59,18 @@ Run as a stdio server:
 ASTROWAY_API_KEY=aw_live_... npx @astroway/mcp
 ```
 
+### Verify the install
+
+After restarting your MCP client:
+
+1. Open the MCP indicator (bottom of the chat input in Claude Desktop, status bar in Cursor).
+2. You should see `astroway` listed as an active server.
+3. Hover or click — the badge shows `624 tools registered + 12 prompts + 14 resources` (counts as of the latest release).
+4. Cold-start takes 2-3 seconds the first time (Node + TLS handshake to api.astroway.info).
+5. Sanity check from any terminal: `npx @astroway/mcp --version` prints the package version, `npx @astroway/mcp --list-tools synastry` prints matching tools.
+
+If the server doesn't appear, set `LOG_LEVEL=debug` in the `env` block above and restart — the boot line and any startup errors land in the client's MCP debug panel.
+
 ---
 
 ## Get an API key
