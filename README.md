@@ -51,6 +51,32 @@ Add to `~/.cursor/mcp.json`:
 }
 ```
 
+### Cline / Continue / Windsurf / Copilot / VS Code MCP
+
+The same `npx @astroway/mcp` command works in every MCP-compatible client. Drop this block into the client's MCP config file (the path varies by client):
+
+```json
+{
+  "mcpServers": {
+    "astroway": {
+      "command": "npx",
+      "args": ["-y", "@astroway/mcp"],
+      "env": { "ASTROWAY_API_KEY": "aw_live_..." }
+    }
+  }
+}
+```
+
+Config locations:
+
+| Client | Config path |
+|---|---|
+| **Cline** (VS Code) | `.cline/mcp.json` in the workspace root |
+| **Continue** | `~/.continue/config.json` (under `mcpServers`) |
+| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` |
+| **GitHub Copilot Chat (VS Code)** | enable preview in settings, then `mcp.json` in workspace |
+| **VS Code MCP extension** | `~/.vscode/mcp.json` |
+
 ### Other MCP clients
 
 Run as a stdio server:
@@ -58,6 +84,35 @@ Run as a stdio server:
 ```bash
 ASTROWAY_API_KEY=aw_live_... npx @astroway/mcp
 ```
+
+### Privacy
+
+This MCP server **does not phone home**. There is no telemetry, no analytics, no usage reporting — and no opt-in / opt-out toggle to maintain. The only network traffic the server originates is the AstroWay API calls you ask it to make, going directly from your machine to `https://api.astroway.info/v1`.
+
+Outgoing requests carry two identifying headers so the AstroWay backend can distinguish MCP traffic from raw HTTP traffic in its own logs:
+
+- `User-Agent: astroway-mcp/<version> (Node/<node-version>)`
+- `X-Astroway-Channel: mcp`
+
+Neither header carries a session ID, machine fingerprint, or anything personal. They mirror standard HTTP `User-Agent` semantics — every CLI tool sends similar information already.
+
+### Subset registration (advanced)
+
+If you only use part of the catalogue, you can register a subset and keep your LLM context window lean:
+
+```jsonc
+{
+  "env": {
+    "ASTROWAY_API_KEY": "aw_live_...",
+    "ASTROWAY_TOOL_GROUPS": "western,vedic,relational",   // only these prefixes
+    "ASTROWAY_READONLY": "1"                               // skip ai/horoscope/reports (LLM-backed, costs credits)
+  }
+}
+```
+
+Common groups: `western`, `vedic`, `tarot`, `numerology`, `hd` (Human Design), `relational` (synastry/composite/davison), `prognostics` (transits/progressions/returns), `aspects`, `horary`, `geo`, `chinese`, `bazi`, `mayan`, `iching`, `runes`, `geomancy`. Run `npx @astroway/mcp --list-tools` to inspect the full set; the boot-line `filters: …` field shows what was applied.
+
+`ASTROWAY_READONLY=1` skips the three groups that internally call an LLM (`ai`, `horoscope`, `reports`) — useful when you want pure deterministic chart math without burning credits on text generation.
 
 ### Stability
 
@@ -187,8 +242,6 @@ See [CHANGELOG.md](CHANGELOG.md).
 - 📘 API docs: <https://api.astroway.info/docs/api/>
 - 🔑 Sign up & dashboard: <https://api.astroway.info/dashboard/>
 - 💰 Pricing: <https://api.astroway.info/pricing/>
-- 🟦 TypeScript SDK: [`@astroway/api`](https://www.npmjs.com/package/@astroway/api)
-- 🐍 Python SDK: [`astroway`](https://pypi.org/project/astroway/)
 - 🌐 Website: <https://astroway.info>
 
 ---

@@ -71,6 +71,19 @@ const LOG_LEVEL_INITIAL = process.env.LOG_LEVEL
 // MCP_FLAT_TOOLS=1 keeps the pre-v0.9 flat names for users who haven't migrated yet.
 const FLAT_TOOLS = process.env.MCP_FLAT_TOOLS === '1' || process.env.MCP_FLAT_TOOLS === 'true';
 
+// v1.0+ — subset registration. ASTROWAY_TOOL_GROUPS=western,vedic limits the
+// catalogue to tools whose prefix matches one of the listed groups. Unset =
+// register all 624. Lowercase, comma-separated, matches `astroway_<prefix>_*`.
+const TOOL_GROUPS_RAW = (process.env.ASTROWAY_TOOL_GROUPS ?? '').trim();
+const TOOL_GROUPS: ReadonlySet<string> | null = TOOL_GROUPS_RAW
+  ? new Set(TOOL_GROUPS_RAW.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))
+  : null;
+
+// v1.0+ — skip groups that consume LLM credits (AI interpretations, AI reports,
+// daily/weekly horoscope text). Deterministic calculation tools stay enabled.
+const READONLY = process.env.ASTROWAY_READONLY === '1' || process.env.ASTROWAY_READONLY === 'true';
+const LLM_GROUPS: ReadonlySet<string> = new Set(['ai', 'horoscope', 'reports']);
+
 const log = new Logger(LOG_LEVEL_INITIAL, process.env.LOG_FILE);
 
 if (!API_KEY) {
@@ -113,7 +126,8 @@ async function callApi(endpoint: string, body: Record<string, unknown>): Promise
       headers: {
         'Content-Type': 'application/json',
         'X-Api-Key': API_KEY,
-        'User-Agent': `astroway-mcp/${MCP_VERSION}`,
+        'User-Agent': `astroway-mcp/${MCP_VERSION} (Node/${process.versions.node})`,
+        'X-Astroway-Channel': 'mcp',
       },
       body: JSON.stringify(body),
     });
@@ -389,9 +403,42 @@ function resolveOutputShape(toolName: string): Record<string, z.ZodTypeAny> | un
   return undefined;
 }
 
+/**
+ * Extracts the namespace prefix from `astroway_<prefix>_<rest>`.
+ * Falls back to the full name when the tool wasn't generated with a prefix.
+ */
+function toolPrefix(prefixedName: string): string {
+  const parts = prefixedName.split('_');
+  return parts.length >= 2 ? parts[1].toLowerCase() : prefixedName.toLowerCase();
+}
+
+// v1.0+ — collect prefixes that exist in the catalogue so we can warn about
+// typos before silently registering 0 tools.
+const ALL_PREFIXES = new Set(GENERATED_TOOLS.map((t) => toolPrefix(t.prefixedName)));
+if (TOOL_GROUPS) {
+  const unknown = [...TOOL_GROUPS].filter((g) => !ALL_PREFIXES.has(g));
+  if (unknown.length > 0) {
+    log.warn(
+      `ASTROWAY_TOOL_GROUPS contains unknown prefix(es): ${unknown.join(', ')}. ` +
+      `Valid prefixes: ${[...ALL_PREFIXES].sort().join(', ')}.`,
+    );
+  }
+}
+
 let registered = 2; // built-in count
 let outputRegistered = 0;
+let skippedByGroup = 0;
+let skippedByReadonly = 0;
 for (const tool of GENERATED_TOOLS) {
+  const prefix = toolPrefix(tool.prefixedName);
+  if (TOOL_GROUPS && !TOOL_GROUPS.has(prefix)) {
+    skippedByGroup++;
+    continue;
+  }
+  if (READONLY && LLM_GROUPS.has(prefix)) {
+    skippedByReadonly++;
+    continue;
+  }
   const schema = tool.schemaKind === 'typed' && tool.typedRef
     ? resolveTypedShape(tool.typedRef)
     : SCHEMAS[tool.schemaKind];
@@ -453,11 +500,21 @@ export function notifyCatalogueChange(reason: string): void {
   server.sendResourceListChanged();
 }
 
+const filtersDesc: string[] = [];
+if (TOOL_GROUPS) filtersDesc.push(`groups=[${[...TOOL_GROUPS].sort().join(',')}]`);
+if (READONLY) filtersDesc.push('readonly=true');
+const skippedTotal = skippedByGroup + skippedByReadonly;
+const filtersSummary = filtersDesc.length > 0
+  ? `${filtersDesc.join(', ')} → ${skippedTotal} of ${GENERATED_TOOLS.length} tools skipped`
+  : 'none (all groups registered)';
+
 log.info(`registered ${registered} tools (${outputRegistered} with outputSchema) + ${promptCount} prompts + ${resourceCount} resources`, {
   base: BASE_URL,
   level: log.getLevel(),
   naming: FLAT_TOOLS ? 'flat (legacy MCP_FLAT_TOOLS=1)' : 'astroway_<group>_<tool>',
   catalogue: 'frozen-at-boot (listChanged advertised but not emitted in this build)',
+  filters: filtersSummary,
+  telemetry: 'disabled (this MCP server does not phone home — User-Agent + X-Astroway-Channel only)',
 });
 
 // Graceful shutdown: close transport cleanly so MCP clients don't see a torn pipe.
