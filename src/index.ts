@@ -434,10 +434,30 @@ for (const tool of GENERATED_TOOLS) {
 const promptCount = registerAllPrompts(server);
 const resourceCount = registerAllResources(server);
 
+/**
+ * v0.11+ — F19: tools/prompts/resources lists are baked at npm-install time
+ * and never mutate during a session. The MCP SDK still advertises
+ * `listChanged: true` for all three (it can't tell a static catalogue apart
+ * from a dynamic one), but in practice we never emit a list_changed
+ * notification.
+ *
+ * This helper exists for future-you: if a release ever ships hot-reload of
+ * tools.generated.ts (e.g. on SIGHUP refetch openapi.json + re-register),
+ * call this to notify subscribed clients that their cached catalogue is stale.
+ */
+export function notifyCatalogueChange(reason: string): void {
+  log.info(`tool/prompt/resource catalogue changed: ${reason}`);
+  // SDK methods are sync (return void) despite the d.ts shape; no need to await.
+  server.sendToolListChanged();
+  server.sendPromptListChanged();
+  server.sendResourceListChanged();
+}
+
 log.info(`registered ${registered} tools (${outputRegistered} with outputSchema) + ${promptCount} prompts + ${resourceCount} resources`, {
   base: BASE_URL,
   level: log.getLevel(),
   naming: FLAT_TOOLS ? 'flat (legacy MCP_FLAT_TOOLS=1)' : 'astroway_<group>_<tool>',
+  catalogue: 'frozen-at-boot (listChanged advertised but not emitted in this build)',
 });
 
 // Graceful shutdown: close transport cleanly so MCP clients don't see a torn pipe.

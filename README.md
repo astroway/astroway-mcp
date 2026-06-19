@@ -59,6 +59,13 @@ Run as a stdio server:
 ASTROWAY_API_KEY=aw_live_... npx @astroway/mcp
 ```
 
+### Stability
+
+- **Catalogue is frozen for the duration of a session.** The 624 tools, 12 prompts, and 14 resources are baked into the published npm package — they don't change at runtime. (The MCP `listChanged` capability is advertised by the SDK, but no `*/list_changed` notification is ever emitted by this build. If your client caches the catalogue after the first `tools/list` it will stay correct for the whole connection.)
+- **Tool identifiers are stable inside a major version.** A name shipped under `astroway_<group>_<tool>` won't be renamed or removed within the same `v0.x` minor without a deprecation note in `CHANGELOG.md`. Across major bumps (`v1` → `v2`) any breaking change is announced and the legacy escape (`MCP_FLAT_TOOLS=1`) carries you across one minor.
+- **Tool input shape is stable inside a minor version.** Tightening (regex, range, enum) ships in patches; adding required fields requires a minor bump.
+- **Refresh the catalogue by reinstalling.** `npm i -g @astroway/mcp@latest` (or the `npx -y @astroway/mcp` form already in your client config) pulls the current set on the next start.
+
 ### Verify the install
 
 After restarting your MCP client:
