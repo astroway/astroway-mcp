@@ -28,7 +28,7 @@ USAGE
                                      Invoke a tool once with the given JSON body, print result, exit
 
 ENVIRONMENT
-  ASTROWAY_API_KEY     Required for normal mode (and --call). Get one at https://api.astroway.info/dashboard/sign-up
+  ASTROWAY_API_KEY     Required (and for --call). Get one at https://api.astroway.info/dashboard/sign-up
   ASTROWAY_BASE_URL    Override the API base URL (default: https://api.astroway.info/v1)
   LOG_LEVEL            silent | error (default) | warn | info | debug
   LOG_FILE             Path to append JSON-line log entries (in addition to stderr)

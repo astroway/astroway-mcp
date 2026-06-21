@@ -114,6 +114,17 @@ Common groups: `western`, `vedic`, `tarot`, `numerology`, `hd` (Human Design), `
 
 `ASTROWAY_READONLY=1` skips the three groups that internally call an LLM (`ai`, `horoscope`, `reports`) — useful when you want pure deterministic chart math without burning credits on text generation.
 
+### Discovery (lean) mode
+
+If your agent hits context or tool-count limits with the full catalogue, set `ASTROWAY_DISCOVERY_MODE=1`. Instead of registering 600+ tools up front, the server exposes just two meta-tools:
+
+- **`astroway_find_tool(query, limit?)`** — keyword-search the whole catalogue; returns the best-matching tools with their one-line description and input parameter names.
+- **`astroway_call_tool(name, arguments?)`** — invoke any tool the search surfaced.
+
+The agent discovers the right tool on demand, then calls it — reaching the entire catalogue from a two-tool footprint.
+
+Trade-off: a tool dispatched through `astroway_call_tool` returns its result as **text only**. A runtime-dispatched call cannot declare a per-call `outputSchema`, so it can't carry the validated `structuredContent` that directly-registered tools provide. Leave `ASTROWAY_DISCOVERY_MODE` unset (the default) when you want typed structured output; use it when tool-count pressure matters more. Discovery supersedes `ASTROWAY_TOOL_GROUPS` / `ASTROWAY_READONLY`.
+
 ### Stability
 
 - **Catalogue is frozen for the duration of a session.** The 624 tools, 12 prompts, and 14 resources are baked into the published npm package — they don't change at runtime. (The MCP `listChanged` capability is advertised by the SDK, but no `*/list_changed` notification is ever emitted by this build. If your client caches the catalogue after the first `tools/list` it will stay correct for the whole connection.)

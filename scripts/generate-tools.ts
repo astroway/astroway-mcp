@@ -444,7 +444,7 @@ async function main(): Promise<void> {
       // Resolve $refs in nested schemas: json-schema-to-zod doesn't follow $refs by default.
       // We pass the full doc so it can resolve them via the resolveAllRefs/inline option.
       // Strategy: replace any nested $ref pointing to components.schemas/X with the inlined component.
-      const inlined = inlineRefs(comp, components);
+      const inlined = relaxTimePatterns(inlineRefs(comp, components));
       const zodSrc = jsonSchemaToZod(inlined as any);
       componentZod[compName] = zodSrc;
     } catch (e: any) {
@@ -574,6 +574,23 @@ function inlineRefs(schema: unknown, components: Record<string, unknown>, seen =
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(obj)) {
     out[k] = inlineRefs(v, components, seen);
+  }
+  return out;
+}
+
+/**
+ * Loosen the server's strict HH:mm:ss time pattern to also accept HH:mm in the
+ * generated input schemas. The model often drops the seconds; src/normalize.ts
+ * pads them back before the request leaves, so the boundary shouldn't reject it.
+ */
+const STRICT_TIME_PATTERN = '^\\d{2}:\\d{2}:\\d{2}$';
+const LENIENT_TIME_PATTERN = '^\\d{2}:\\d{2}(:\\d{2})?$';
+function relaxTimePatterns(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(relaxTimePatterns);
+  if (!schema || typeof schema !== 'object') return schema;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema as Record<string, unknown>)) {
+    out[k] = k === 'pattern' && v === STRICT_TIME_PATTERN ? LENIENT_TIME_PATTERN : relaxTimePatterns(v);
   }
   return out;
 }

@@ -12,10 +12,12 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 
 import { GENERATED_TOOLS, TYPED_SCHEMAS, OUTPUT_SCHEMAS, type SchemaKind } from './tools.generated.js';
+import { isTypedBodyWrapped } from './typed-body.js';
 import { REFERENCE_RESOURCES } from './resources.generated.js';
 import { fetchAccountStatus } from './tools/account-status.js';
 import { loadCostManifest, estimateOne, formatEstimate } from './tools/cost-estimate.js';
 import { fetchWithRetry } from './retry.js';
+import { normalizeTimes } from './normalize.js';
 import { registerAllPrompts } from './prompts.js';
 import { registerAllResources } from './resources.js';
 import { MCP_VERSION } from './version.js';
@@ -62,6 +64,13 @@ if (cli.mode === 'list-prompts') {
 
 const API_KEY = process.env.ASTROWAY_API_KEY ?? '';
 const BASE_URL = process.env.ASTROWAY_BASE_URL ?? 'https://api.astroway.info/v1';
+/* Optional Accept-Language default for every API call. Backed by api-calc
+ * v2.30.0+ middleware that resolves the header against 21 active langs
+ * (uk, en, de, ru, pl, es, pt, fr, it, nl, cs, ro, hu, el, tr, ar, hi,
+ * ja, ko, vi, id) and routes the request lang into AI prompt instructions
+ * for /horoscope/* + /interpret/*. Per-call body.language still wins
+ * because the api-calc resolver tries body first. */
+const LANG = (process.env.ASTROWAY_LANG ?? '').trim() || null;
 // LOG_LEVEL takes precedence; ASTROWAY_VERBOSE=1 maps to debug for back-compat.
 const VERBOSE_LEGACY = process.env.ASTROWAY_VERBOSE === '1' || process.env.ASTROWAY_VERBOSE === 'true';
 const LOG_LEVEL_INITIAL = process.env.LOG_LEVEL
@@ -84,8 +93,18 @@ const TOOL_GROUPS: ReadonlySet<string> | null = TOOL_GROUPS_RAW
 const READONLY = process.env.ASTROWAY_READONLY === '1' || process.env.ASTROWAY_READONLY === 'true';
 const LLM_GROUPS: ReadonlySet<string> = new Set(['ai', 'horoscope', 'reports']);
 
+// v1.1+ — discovery (lean) mode. ASTROWAY_DISCOVERY_MODE=1 registers ONLY two
+// meta-tools (astroway_find_tool + astroway_call_tool) instead of the full
+// catalogue, for agents that hit context/tool-count limits with 600+ tools.
+// Trade-off: a runtime-dispatched call_tool can't declare a per-call
+// outputSchema, so its results are text-only (no validated structuredContent).
+// Unset (default) keeps the fully-typed catalogue. Discovery supersedes
+// TOOL_GROUPS/READONLY (find_tool reaches the whole catalogue regardless).
+const DISCOVERY_MODE = process.env.ASTROWAY_DISCOVERY_MODE === '1' || process.env.ASTROWAY_DISCOVERY_MODE === 'true';
+
 const log = new Logger(LOG_LEVEL_INITIAL, process.env.LOG_FILE);
 
+// API_KEY required for stdio mode (one tenant per subprocess).
 if (!API_KEY) {
   log.error('ASTROWAY_API_KEY environment variable is required.');
   log.error('Get a key at https://api.astroway.info/dashboard/sign-up — 10,000 credits/month free.');
@@ -117,7 +136,27 @@ interface CallResult {
   structured?: unknown;
 }
 
-async function callApi(endpoint: string, body: Record<string, unknown>): Promise<CallResult> {
+/**
+ * Resolve per-request API key + analytics channel hint. HTTP transport supplies
+ * the key through RequestHandlerExtra.authInfo.token (populated by Bearer-auth
+ * middleware) and we label that channel 'mcp-http'; stdio transport has no
+ * per-request auth, so we fall back to the module-level env-var key and label
+ * the channel 'mcp'. Single source of truth for both transport modes.
+ */
+function resolveAuth(extra: { authInfo?: { token?: string } } | undefined): { apiKey: string; channel: 'mcp' | 'mcp-http' } {
+  const fromExtra = extra?.authInfo?.token;
+  return {
+    apiKey: fromExtra || API_KEY,
+    channel: fromExtra ? 'mcp-http' : 'mcp',
+  };
+}
+
+async function callApi(
+  endpoint: string,
+  body: Record<string, unknown>,
+  apiKey: string,
+  channel: 'mcp' | 'mcp-http' = 'mcp',
+): Promise<CallResult> {
   const url = `${BASE_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
   log.debug(`POST ${url}`, { body: JSON.stringify(body).slice(0, 500) });
   try {
@@ -125,9 +164,10 @@ async function callApi(endpoint: string, body: Record<string, unknown>): Promise
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Api-Key': API_KEY,
+        'X-Api-Key': apiKey,
         'User-Agent': `astroway-mcp/${MCP_VERSION} (Node/${process.versions.node})`,
-        'X-Astroway-Channel': 'mcp',
+        'X-Astroway-Channel': channel,
+        ...(LANG ? { 'Accept-Language': LANG } : {}),
       },
       body: JSON.stringify(body),
     });
@@ -168,7 +208,7 @@ if (cli.mode === 'call') {
     process.stderr.write(`Invalid --json: ${(e as Error).message}\n`);
     process.exit(1);
   }
-  const result = await callApi(endpoint, body);
+  const result = await callApi(endpoint, body, API_KEY, 'mcp');
   process.stdout.write(result.text + '\n');
   process.exit(0);
 }
@@ -317,8 +357,12 @@ const BODY_TRANSFORMERS: Record<SchemaKind, (p: Record<string, any>) => Record<s
   year: (p) => p,
   date: (p) => p,
   generic: (p) => (typeof p.body === 'object' && p.body !== null ? (p.body as Record<string, unknown>) : p),
-  typed: (p) => p, // typed schemas pass through — fields match server expectation directly
+  typed: (p) => p, // typed ZodObject schemas pass through — fields match server expectation directly
 };
+
+function transformFor(tool: typeof GENERATED_TOOLS[number]): (p: Record<string, any>) => Record<string, unknown> {
+  return isTypedBodyWrapped(tool) ? BODY_TRANSFORMERS.generic : BODY_TRANSFORMERS[tool.schemaKind];
+}
 
 // ─── MCP Server ──────────────────────────────────────────────
 
@@ -351,8 +395,9 @@ server.registerTool(
       openWorldHint: false,
     },
   },
-  async () => {
-    const text = await fetchAccountStatus(BASE_URL, API_KEY);
+  async (_args, extra) => {
+    const { apiKey } = resolveAuth(extra as { authInfo?: { token?: string } } | undefined);
+    const text = await fetchAccountStatus(BASE_URL, apiKey);
     return { content: [{ type: 'text' as const, text }] };
   },
 );
@@ -412,6 +457,83 @@ function toolPrefix(prefixedName: string): string {
   return parts.length >= 2 ? parts[1].toLowerCase() : prefixedName.toLowerCase();
 }
 
+/** Input parameter names for a tool — used by find_tool so the agent knows
+ *  what to pass to call_tool. */
+function discoveryInputKeys(tool: typeof GENERATED_TOOLS[number]): string[] {
+  const shape = tool.schemaKind === 'typed' && tool.typedRef
+    ? resolveTypedShape(tool.typedRef)
+    : SCHEMAS[tool.schemaKind];
+  return shape ? Object.keys(shape as Record<string, unknown>) : [];
+}
+
+/** v1.1+ discovery (lean) mode — two meta-tools that let an agent reach the
+ *  whole catalogue without registering 600+ tools up front. */
+function registerDiscoveryTools(): void {
+  server.registerTool(
+    'astroway_find_tool',
+    {
+      title: 'Find tool',
+      description: 'Search the full AstroWay catalogue by keyword and return the best-matching tools with their one-line description and input parameter names. Use this to locate the right tool, then invoke it with astroway_call_tool. Example queries: "natal chart", "synastry compatibility", "vedic dasha", "solar arc", "tarot spread".',
+      inputSchema: {
+        query: z.string().describe('Keywords describing what you want, e.g. "secondary progressions" or "human design chart".'),
+        limit: z.number().int().min(1).max(25).optional().describe('Max results (default 8).'),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ query, limit }) => {
+      const terms = String(query).toLowerCase().split(/\s+/).filter(Boolean);
+      const scored = GENERATED_TOOLS
+        .map((t) => {
+          const name = (FLAT_TOOLS ? t.name : t.prefixedName).toLowerCase();
+          const desc = t.description.toLowerCase();
+          let score = 0;
+          for (const term of terms) {
+            if (name.includes(term)) score += 3;
+            else if (desc.includes(term)) score += 1;
+          }
+          return { t, score };
+        })
+        .filter((x) => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit ?? 8);
+      if (scored.length === 0) {
+        return { content: [{ type: 'text' as const, text: `No tools matched "${query}". Try broader keywords (e.g. "chart", "transit", "tarot", "numerology").` }] };
+      }
+      const lines = scored.map(({ t }) => {
+        const regName = FLAT_TOOLS ? t.name : t.prefixedName;
+        const desc = t.description.split('\n')[0];
+        const keys = discoveryInputKeys(t);
+        return `• ${regName}\n  ${desc}\n  params: ${keys.length ? keys.join(', ') : '(none)'}`;
+      });
+      return { content: [{ type: 'text' as const, text: `${scored.length} match(es) for "${query}":\n\n${lines.join('\n\n')}\n\nInvoke one with astroway_call_tool({ name, arguments }).` }] };
+    },
+  );
+
+  server.registerTool(
+    'astroway_call_tool',
+    {
+      title: 'Call tool',
+      description: 'Invoke any AstroWay tool by name (discover names with astroway_find_tool first). Returns the JSON result as text. Note: in discovery mode results are text-only — for validated structuredContent, register the tool directly (default mode, omit ASTROWAY_DISCOVERY_MODE).',
+      inputSchema: {
+        name: z.string().describe('Exact tool name from astroway_find_tool, e.g. "astroway_western_chart".'),
+        arguments: z.record(z.string(), z.any()).optional().describe('Arguments object for the tool (use the param names from astroway_find_tool).'),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ name, arguments: args }, extra) => {
+      const tool = GENERATED_TOOLS.find((t) => t.name === name || t.prefixedName === name);
+      if (!tool) {
+        return { content: [{ type: 'text' as const, text: `Unknown tool "${name}". Use astroway_find_tool to discover valid tool names.` }], isError: true };
+      }
+      const transform = transformFor(tool);
+      const body = normalizeTimes(transform((args ?? {}) as Record<string, any>)) as Record<string, unknown>;
+      const { apiKey, channel } = resolveAuth(extra as { authInfo?: { token?: string } } | undefined);
+      const result = await callApi(tool.endpoint, body, apiKey, channel);
+      return { content: [{ type: 'text' as const, text: result.text }] };
+    },
+  );
+}
+
 // v1.0+ — collect prefixes that exist in the catalogue so we can warn about
 // typos before silently registering 0 tools.
 const ALL_PREFIXES = new Set(GENERATED_TOOLS.map((t) => toolPrefix(t.prefixedName)));
@@ -429,7 +551,11 @@ let registered = 2; // built-in count
 let outputRegistered = 0;
 let skippedByGroup = 0;
 let skippedByReadonly = 0;
-for (const tool of GENERATED_TOOLS) {
+if (DISCOVERY_MODE) {
+  registerDiscoveryTools();
+  registered += 2;
+}
+for (const tool of (DISCOVERY_MODE ? [] : GENERATED_TOOLS)) {
   const prefix = toolPrefix(tool.prefixedName);
   if (TOOL_GROUPS && !TOOL_GROUPS.has(prefix)) {
     skippedByGroup++;
@@ -442,7 +568,7 @@ for (const tool of GENERATED_TOOLS) {
   const schema = tool.schemaKind === 'typed' && tool.typedRef
     ? resolveTypedShape(tool.typedRef)
     : SCHEMAS[tool.schemaKind];
-  const transform = BODY_TRANSFORMERS[tool.schemaKind];
+  const transform = transformFor(tool);
   const outputShape = tool.hasOutput ? resolveOutputShape(tool.name) : undefined;
   if (outputShape) outputRegistered++;
   const registeredName = FLAT_TOOLS ? tool.name : tool.prefixedName;
@@ -455,9 +581,10 @@ for (const tool of GENERATED_TOOLS) {
       ...(outputShape ? { outputSchema: outputShape } : {}),
       annotations: tool.annotations,
     },
-    async (params) => {
-      const body = transform(params as Record<string, any>);
-      const result = await callApi(tool.endpoint, body);
+    async (params, extra) => {
+      const body = normalizeTimes(transform(params as Record<string, any>)) as Record<string, unknown>;
+      const { apiKey, channel } = resolveAuth(extra as { authInfo?: { token?: string } } | undefined);
+      const result = await callApi(tool.endpoint, body, apiKey, channel);
       const response: {
         content: { type: 'text'; text: string }[];
         structuredContent?: { [x: string]: unknown };
@@ -501,6 +628,7 @@ export function notifyCatalogueChange(reason: string): void {
 }
 
 const filtersDesc: string[] = [];
+if (DISCOVERY_MODE) filtersDesc.push('discovery=lean(find_tool+call_tool)');
 if (TOOL_GROUPS) filtersDesc.push(`groups=[${[...TOOL_GROUPS].sort().join(',')}]`);
 if (READONLY) filtersDesc.push('readonly=true');
 const skippedTotal = skippedByGroup + skippedByReadonly;
@@ -517,16 +645,21 @@ log.info(`registered ${registered} tools (${outputRegistered} with outputSchema)
   telemetry: 'disabled (this MCP server does not phone home — User-Agent + X-Astroway-Channel only)',
 });
 
+// ─── Transport (stdio) ──────────────────────────────────────────────
+// Stdio transport. ASTROWAY_API_KEY env var supplies the key (one tenant per
+// stdio subprocess). The hosted Streamable-HTTP server lives in its own repo
+// (mcp.astroway.info); the npm package is stdio-only.
+const transport = new StdioServerTransport();
+
 // Graceful shutdown: close transport cleanly so MCP clients don't see a torn pipe.
-function shutdown(reason: string): void {
+const shutdown = (reason: string): void => {
   log.info(`shutting down: ${reason}`);
   transport.close().catch(() => { /* drop */ });
   process.exit(0);
-}
+};
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-const transport = new StdioServerTransport();
 server.connect(transport).catch((err: unknown) => {
   log.error('failed to start', { error: (err as Error)?.message ?? String(err) });
   process.exit(1);
