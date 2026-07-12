@@ -412,6 +412,9 @@ async function main(): Promise<void> {
     if (!dataSchema) continue;
     try {
       // dataSchema is fully inlined already (api-calc emits inferred JSON Schema, no $refs).
+      // Emitted objects stay closed here (Zod v4 → additionalProperties:false); the inferred
+      // schema only lists a subset of real response fields, so index.ts#deepOpenOutput reopens
+      // every object at registration time. Don't add .catchall here — reopening is centralised.
       const src = jsonSchemaToZod(dataSchema as any);
       outputZodByTool[t.name] = src;
     } catch (e: any) {

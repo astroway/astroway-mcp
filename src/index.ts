@@ -13,6 +13,7 @@ import { z } from 'zod';
 
 import { GENERATED_TOOLS, TYPED_SCHEMAS, OUTPUT_SCHEMAS, type SchemaKind } from './tools.generated.js';
 import { isTypedBodyWrapped } from './typed-body.js';
+import { deepOpenOutput } from './output-schema.js';
 import { REFERENCE_RESOURCES } from './resources.generated.js';
 import { fetchAccountStatus } from './tools/account-status.js';
 import { loadCostManifest, estimateOne, formatEstimate } from './tools/cost-estimate.js';
@@ -437,15 +438,15 @@ server.registerTool(
 // ─── Generated tools ─────────────────────────────────────────
 
 /**
- * For tools with hasOutput, return the OUTPUT_SCHEMAS entry as a ZodRawShape
- * (i.e. the .shape of a ZodObject). Returns undefined when the schema isn't
- * an object (rare — generator filters non-object data shapes earlier).
+ * For tools with hasOutput, return the OUTPUT_SCHEMAS entry reopened via
+ * deepOpenOutput so strict clients accept real (fuller) responses. Returns
+ * undefined when the schema isn't an object (rare — the generator filters
+ * non-object data shapes earlier).
  */
-function resolveOutputShape(toolName: string): Record<string, z.ZodTypeAny> | undefined {
+function resolveOutputShape(toolName: string): z.ZodTypeAny | undefined {
   const schema = OUTPUT_SCHEMAS[toolName];
-  if (!schema) return undefined;
-  if (schema instanceof z.ZodObject) return schema.shape as Record<string, z.ZodTypeAny>;
-  return undefined;
+  if (!(schema instanceof z.ZodObject)) return undefined;
+  return deepOpenOutput(schema);
 }
 
 /**

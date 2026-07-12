@@ -6,6 +6,17 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { GENERATED_TOOLS, OUTPUT_SCHEMAS } from '../src/tools.generated.js';
+import { deepOpenOutput } from '../src/output-schema.js';
+
+/** Walk a JSON Schema tree and collect every path where an object is closed. */
+function closedPaths(node: unknown, path = '$', hits: string[] = []): string[] {
+  if (node && typeof node === 'object') {
+    if ((node as Record<string, unknown>).additionalProperties === false) hits.push(path);
+    for (const [k, v] of Object.entries(node)) closedPaths(v, `${path}/${k}`, hits);
+  }
+  return hits;
+}
+const toJson = (s: z.ZodTypeAny) => z.toJSONSchema(s, { io: 'output', unrepresentable: 'any' });
 
 describe('OUTPUT_SCHEMAS export', () => {
   it('is a non-empty record', () => {
@@ -56,5 +67,39 @@ describe('outputSchema is registrable as ZodRawShape', () => {
     const shape = (sch as z.ZodObject<any>).shape;
     expect(typeof shape).toBe('object');
     expect(Object.keys(shape).length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Regression — bug #5 (Anil Ghale, 2026-07): every generated output schema was
+ * closed (Zod v4 → additionalProperties:false), so strict MCP clients (Claude
+ * Desktop, the SDK Client) rejected every real response with "Structured content
+ * does not match the tool's output schema". deepOpenOutput reopens them.
+ */
+describe('deepOpenOutput reopens closed object schemas', () => {
+  it('generated schemas are closed by default (documents the bug)', () => {
+    // If this ever flips, the generator started emitting open objects and the
+    // reopen step could be simplified — but until then it must stay.
+    expect(closedPaths(toJson(OUTPUT_SCHEMAS['chart'])).length).toBeGreaterThan(0);
+  });
+
+  it('no output schema stays closed after deepOpenOutput', () => {
+    const offenders: string[] = [];
+    for (const [name, sch] of Object.entries(OUTPUT_SCHEMAS)) {
+      if (!(sch instanceof z.ZodObject)) continue;
+      const hits = closedPaths(toJson(deepOpenOutput(sch)));
+      if (hits.length) offenders.push(`${name} (${hits.length})`);
+    }
+    expect(offenders, `closed after reopen: ${offenders.slice(0, 10).join(', ')}`).toEqual([]);
+  });
+
+  it('reopened schema still validates a response with extra fields', () => {
+    const opened = deepOpenOutput(OUTPUT_SCHEMAS['chart']);
+    const res = (opened as z.ZodTypeAny).safeParse({
+      planets: [{ name: 'Sun', longitude: 100, brandNewField: 'x' }],
+      houses: { ascendant: 12, cusps: [], anotherNewField: true },
+      totallyUnlistedTopLevelKey: 42,
+    });
+    expect(res.success).toBe(true);
   });
 });
