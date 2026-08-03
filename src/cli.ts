@@ -122,3 +122,9 @@ export function findToolEndpoint(toolName: string): string | null {
   const t = GENERATED_TOOLS.find((x) => x.name === toolName || x.prefixedName === toolName);
   return t ? t.endpoint : null;
 }
+
+/** HTTP method for a tool. GET lookups would 404 as POST, so --call has to ask. */
+export function findToolMethod(toolName: string): 'GET' | 'POST' {
+  const t = GENERATED_TOOLS.find((x) => x.name === toolName || x.prefixedName === toolName);
+  return t?.httpMethod ?? 'POST';
+}

@@ -23,7 +23,7 @@ import { registerAllPrompts } from './prompts.js';
 import { registerAllResources } from './resources.js';
 import { MCP_VERSION } from './version.js';
 import { Logger, levelFromEnv } from './logger.js';
-import { parseArgs, printVersion, printHelp, listTools, findToolEndpoint } from './cli.js';
+import { parseArgs, printVersion, printHelp, listTools, findToolEndpoint, findToolMethod } from './cli.js';
 import { installKeepAliveAgent } from './http-agent.js';
 
 // Reuse TCP/TLS sockets across consecutive API calls (saves 30-50 ms per call).
@@ -157,20 +157,24 @@ async function callApi(
   body: Record<string, unknown>,
   apiKey: string,
   channel: 'mcp' | 'mcp-http' = 'mcp',
+  method: 'GET' | 'POST' = 'POST',
 ): Promise<CallResult> {
   const url = `${BASE_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
-  log.debug(`POST ${url}`, { body: JSON.stringify(body).slice(0, 500) });
+  log.debug(`${method} ${url}`, { body: JSON.stringify(body).slice(0, 500) });
   try {
+    /* GET lookups carry no body. Sending one is not merely redundant: fetch
+       rejects a GET with a body outright. Content-Type goes with it. */
+    const isGet = method === 'GET';
     const res = await fetchWithRetry(url, {
-      method: 'POST',
+      method,
       headers: {
-        'Content-Type': 'application/json',
+        ...(isGet ? {} : { 'Content-Type': 'application/json' }),
         'X-Api-Key': apiKey,
         'User-Agent': `astroway-mcp/${MCP_VERSION} (Node/${process.versions.node})`,
         'X-Astroway-Channel': channel,
         ...(LANG ? { 'Accept-Language': LANG } : {}),
       },
-      body: JSON.stringify(body),
+      ...(isGet ? {} : { body: JSON.stringify(body) }),
     });
     const json = (await res.json()) as { ok?: boolean; data?: unknown; error?: { code?: string; message?: string } };
     log.debug(`← ${res.status} ${res.statusText}`);
@@ -209,7 +213,7 @@ if (cli.mode === 'call') {
     process.stderr.write(`Invalid --json: ${(e as Error).message}\n`);
     process.exit(1);
   }
-  const result = await callApi(endpoint, body, API_KEY, 'mcp');
+  const result = await callApi(endpoint, body, API_KEY, 'mcp', findToolMethod(cli.toolName ?? ''));
   process.stdout.write(result.text + '\n');
   process.exit(0);
 }
@@ -309,6 +313,7 @@ const SCHEMAS: Record<SchemaKind, Record<string, z.ZodTypeAny>> = {
   date: dateShape,
   generic: genericShape,
   typed: genericShape, // sentinel — actual shape resolved per tool from TYPED_SCHEMAS
+  none: {}, // GET lookups: no body, no declared query params, so no input at all
 };
 
 /**
@@ -359,6 +364,7 @@ const BODY_TRANSFORMERS: Record<SchemaKind, (p: Record<string, any>) => Record<s
   date: (p) => p,
   generic: (p) => (typeof p.body === 'object' && p.body !== null ? (p.body as Record<string, unknown>) : p),
   typed: (p) => p, // typed ZodObject schemas pass through — fields match server expectation directly
+  none: () => ({}), // GET lookups take no input; drop anything an agent invents
 };
 
 function transformFor(tool: typeof GENERATED_TOOLS[number]): (p: Record<string, any>) => Record<string, unknown> {
@@ -529,7 +535,7 @@ function registerDiscoveryTools(): void {
       const transform = transformFor(tool);
       const body = normalizeTimes(transform((args ?? {}) as Record<string, any>)) as Record<string, unknown>;
       const { apiKey, channel } = resolveAuth(extra as { authInfo?: { token?: string } } | undefined);
-      const result = await callApi(tool.endpoint, body, apiKey, channel);
+      const result = await callApi(tool.endpoint, body, apiKey, channel, tool.httpMethod ?? 'POST');
       return { content: [{ type: 'text' as const, text: result.text }] };
     },
   );
@@ -585,7 +591,7 @@ for (const tool of (DISCOVERY_MODE ? [] : GENERATED_TOOLS)) {
     async (params, extra) => {
       const body = normalizeTimes(transform(params as Record<string, any>)) as Record<string, unknown>;
       const { apiKey, channel } = resolveAuth(extra as { authInfo?: { token?: string } } | undefined);
-      const result = await callApi(tool.endpoint, body, apiKey, channel);
+      const result = await callApi(tool.endpoint, body, apiKey, channel, tool.httpMethod ?? 'POST');
       const response: {
         content: { type: 'text'; text: string }[];
         structuredContent?: { [x: string]: unknown };

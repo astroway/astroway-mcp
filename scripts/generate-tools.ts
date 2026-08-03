@@ -26,7 +26,8 @@ type SchemaKind =
   | 'chart' | 'twoChart' | 'chartTarget'
   | 'horoscopeSign' | 'horoscopeCompat'
   | 'year' | 'date' | 'generic'
-  | 'typed'; // ← new in v0.4
+  | 'typed'  // ← new in v0.4
+  | 'none';  // ← v1.2: GET lookups, no request body and no declared query params
 
 interface ToolAnnotations {
   readOnlyHint: boolean;
@@ -37,6 +38,8 @@ interface ToolAnnotations {
 
 interface GeneratedTool {
   name: string;
+  /** v1.2 — 'GET' for lookup endpoints; omitted (POST) for everything else. */
+  httpMethod?: 'GET';
   /**
    * v0.9+ — namespaced canonical tool name `astroway_<prefix>_<name>`.
    * Server registers this by default; `MCP_FLAT_TOOLS=1` falls back to `name`
@@ -69,6 +72,7 @@ interface OpenAPIOperation {
   operationId?: string;
   security?: unknown[];
   deprecated?: boolean;
+  parameters?: { name?: string; in?: string; required?: boolean; schema?: { type?: string } }[];
   requestBody?: {
     content?: {
       'application/json'?: {
@@ -324,9 +328,15 @@ async function main(): Promise<void> {
   let typedCount = 0;
 
   for (const [path, methods] of Object.entries(doc.paths)) {
-    const op = methods.post;
+    /* v1.2 — GET lookups become tools too. Before this, every generator
+       filtered on `methods.post` and 93 GET-only paths reached no consumer at
+       all: the tarot, zodiac and esoteric dictionaries, /acg/categories,
+       /muhurta/types. The keyless /reference/* tables were the only ones
+       mitigated, and only as MCP resources. */
+    const op = methods.post ?? methods.get;
+    const httpMethod: 'GET' | 'POST' = methods.post ? 'POST' : 'GET';
     if (!op) {
-      skippedReason['non-post'] = (skippedReason['non-post'] ?? 0) + 1;
+      skippedReason['no-get-or-post'] = (skippedReason['no-get-or-post'] ?? 0) + 1;
       continue;
     }
     if (/\{[^}]+\}/.test(path)) {
@@ -352,11 +362,24 @@ async function main(): Promise<void> {
     const body = example != null ? JSON.stringify(example) : null;
     const desc = op.description ?? op.summary ?? '';
 
+    /* GET lookups take no request body. Every one of them currently declares
+       zero query parameters in the spec, so the tool takes no input at all;
+       schemaKind 'none' registers an empty inputSchema. A GET that later
+       declares query params needs a schema built from op.parameters, and this
+       is the branch to extend. */
+    const queryParams = (op.parameters ?? []).filter((prm: any) => prm?.in === 'query');
+    if (httpMethod === 'GET' && queryParams.length > 0) {
+      console.warn(`[generate-tools] GET ${path} declares ${queryParams.length} query param(s); registering with an empty input schema until parameter support lands`);
+      skippedReason['get-query-params-ignored'] = (skippedReason['get-query-params-ignored'] ?? 0) + 1;
+    }
+
     // v0.4 — prefer typed schema if openapi.json provides $ref
     const schemaSpec = op.requestBody?.content?.['application/json']?.schema;
     let kind: SchemaKind;
     let typedRef: string | undefined;
-    if (schemaSpec?.$ref) {
+    if (httpMethod === 'GET') {
+      kind = 'none';
+    } else if (schemaSpec?.$ref) {
       const compName = refToComponentName(schemaSpec.$ref);
       if (compName && components[compName]) {
         kind = 'typed';
@@ -389,6 +412,7 @@ async function main(): Promise<void> {
 
     tools.push({
       name: toolName,
+      ...(httpMethod === 'GET' ? { httpMethod: 'GET' as const } : {}),
       prefixedName,
       description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated, kind),
       endpoint: path,
@@ -407,9 +431,16 @@ async function main(): Promise<void> {
   const outputZodByTool: Record<string, string> = {};
   for (const t of tools) {
     if (!t.hasOutput) continue;
-    const op = doc.paths[t.endpoint]?.post;
+    /* Resolve by the tool's own method. Reading `.post` unconditionally left
+       GET tools flagged hasOutput with no OUTPUT_SCHEMAS entry to back it. */
+    const op = t.httpMethod === 'GET' ? doc.paths[t.endpoint]?.get : doc.paths[t.endpoint]?.post;
     const dataSchema = op?.responses?.['200']?.content?.['application/json']?.schema?.properties?.data;
-    if (!dataSchema) continue;
+    if (!dataSchema) {
+      // Same reasoning as the convert-failure branch below: never advertise a
+      // schema that was not emitted.
+      t.hasOutput = false;
+      continue;
+    }
     try {
       // dataSchema is fully inlined already (api-calc emits inferred JSON Schema, no $refs).
       // Emitted objects stay closed here (Zod v4 → additionalProperties:false); the inferred
@@ -488,7 +519,8 @@ export type SchemaKind =
   | 'chart' | 'twoChart' | 'chartTarget'
   | 'horoscopeSign' | 'horoscopeCompat'
   | 'year' | 'date' | 'generic'
-  | 'typed';
+  | 'typed'
+  | 'none';
 
 export interface ToolAnnotations {
   readOnlyHint: boolean;
@@ -499,6 +531,8 @@ export interface ToolAnnotations {
 
 export interface GeneratedTool {
   name: string;
+  /** 'GET' for lookup endpoints; omitted (POST) for everything else. */
+  httpMethod?: 'GET';
   prefixedName: string;
   description: string;
   endpoint: string;
