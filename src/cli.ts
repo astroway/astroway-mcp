@@ -128,3 +128,10 @@ export function findToolMethod(toolName: string): 'GET' | 'POST' {
   const t = GENERATED_TOOLS.find((x) => x.name === toolName || x.prefixedName === toolName);
   return t?.httpMethod ?? 'POST';
 }
+
+/** Path-parameter names for a tool, so --call substitutes them into the URL
+ *  instead of calling the endpoint with literal braces. */
+export function findToolPathParams(toolName: string): string[] | undefined {
+  const t = GENERATED_TOOLS.find((x) => x.name === toolName || x.prefixedName === toolName);
+  return t?.pathParams as string[] | undefined;
+}

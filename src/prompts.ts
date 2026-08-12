@@ -525,7 +525,7 @@ Output language: ${language ?? 'en'}.`,
           role: 'user' as const,
           content: {
             type: 'text' as const,
-            text: `Get the lunar phase information for ${date} at lat=${latitude}, lon=${longitude} using the AstroWay API.
+            text: `Get the lunar phase information for ${date} at latitude=${latitude}, longitude=${longitude} using the AstroWay API.
 
 Workflow:
 1. Fetch lunar phase data for the day at the location.

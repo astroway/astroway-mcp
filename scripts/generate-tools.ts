@@ -40,6 +40,8 @@ interface GeneratedTool {
   name: string;
   /** v1.2 — 'GET' for lookup endpoints; omitted (POST) for everything else. */
   httpMethod?: 'GET';
+  /** v1.3 — names substituted into the URL rather than sent as a body. */
+  pathParams?: string[];
   /**
    * v0.9+ — namespaced canonical tool name `astroway_<prefix>_<name>`.
    * Server registers this by default; `MCP_FLAT_TOOLS=1` falls back to `name`
@@ -323,6 +325,9 @@ async function main(): Promise<void> {
   console.log(`[generate-tools] openapi has ${componentNames.length} components.schemas`);
 
   const tools: GeneratedTool[] = [];
+  /* Synthetic components built from path parameters. Merged into `components`
+     below so the normal typed-schema emitter picks them up unchanged. */
+  const syntheticComponents: Record<string, unknown> = {};
   const skippedReason: Record<string, number> = {};
   let costAnnotated = 0;
   let typedCount = 0;
@@ -339,10 +344,20 @@ async function main(): Promise<void> {
       skippedReason['no-get-or-post'] = (skippedReason['no-get-or-post'] ?? 0) + 1;
       continue;
     }
-    if (/\{[^}]+\}/.test(path)) {
-      console.warn(`[generate-tools] skipping path-template endpoint: ${path}`);
-      skippedReason['path-template-unsupported'] = (skippedReason['path-template-unsupported'] ?? 0) + 1;
-      continue;
+    /* v1.3 — templated paths are supported. api-calc declares their `{brace}`
+       parameters since 2026-08-04; before that the spec was invalid there and
+       there was nothing to generate a schema from. A path whose braces are
+       still undeclared is skipped rather than guessed at. */
+    const braceNames = [...path.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]);
+    const declaredPath = (op.parameters ?? []).filter((prm: any) => prm?.in === 'path');
+    if (braceNames.length > 0) {
+      const declaredNames = declaredPath.map((prm: any) => String(prm.name));
+      const undeclared = braceNames.filter((b) => !declaredNames.includes(b));
+      if (undeclared.length > 0) {
+        console.warn(`[generate-tools] skipping ${path}: undeclared path param(s) ${undeclared.join(', ')}`);
+        skippedReason['path-param-undeclared'] = (skippedReason['path-param-undeclared'] ?? 0) + 1;
+        continue;
+      }
     }
     const tags = op.tags ?? [];
     const group = tags[0] ?? 'Uncategorized';
@@ -377,7 +392,24 @@ async function main(): Promise<void> {
     const schemaSpec = op.requestBody?.content?.['application/json']?.schema;
     let kind: SchemaKind;
     let typedRef: string | undefined;
-    if (httpMethod === 'GET') {
+    if (braceNames.length > 0) {
+      /* Templated path: the input is the path parameters, not a body. Build a
+         synthetic component from the declared params and route it through the
+         existing typed-schema machinery rather than inventing a second one. */
+      const synthetic = {
+        type: 'object',
+        properties: Object.fromEntries(declaredPath.map((prm: any) => [
+          String(prm.name),
+          { ...(prm.schema ?? { type: 'string' }), description: prm.description },
+        ])),
+        required: declaredPath.filter((prm: any) => prm.required !== false).map((prm: any) => String(prm.name)),
+      };
+      const compName = `PathParams_${sanitizeName(path)}`;
+      syntheticComponents[compName] = synthetic;
+      kind = 'typed';
+      typedRef = compName;
+      typedCount++;
+    } else if (httpMethod === 'GET') {
       kind = 'none';
     } else if (schemaSpec?.$ref) {
       const compName = refToComponentName(schemaSpec.$ref);
@@ -413,6 +445,7 @@ async function main(): Promise<void> {
     tools.push({
       name: toolName,
       ...(httpMethod === 'GET' ? { httpMethod: 'GET' as const } : {}),
+      ...(braceNames.length > 0 ? { pathParams: braceNames } : {}),
       prefixedName,
       description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated, kind),
       endpoint: path,
@@ -470,15 +503,16 @@ async function main(): Promise<void> {
 
   // Emit Zod source for each used component via json-schema-to-zod.
   // The library returns a string like 'z.object({...})'.
+  const allComponents: Record<string, unknown> = { ...components, ...syntheticComponents };
   const componentZod: Record<string, string> = {};
   for (const compName of usedComponents) {
-    const comp = components[compName];
+    const comp = allComponents[compName];
     if (!comp) continue;
     try {
       // Resolve $refs in nested schemas: json-schema-to-zod doesn't follow $refs by default.
       // We pass the full doc so it can resolve them via the resolveAllRefs/inline option.
       // Strategy: replace any nested $ref pointing to components.schemas/X with the inlined component.
-      const inlined = relaxTimePatterns(inlineRefs(comp, components));
+      const inlined = relaxTimePatterns(inlineRefs(comp, allComponents as any));
       const zodSrc = jsonSchemaToZod(inlined as any);
       componentZod[compName] = zodSrc;
     } catch (e: any) {
@@ -533,6 +567,8 @@ export interface GeneratedTool {
   name: string;
   /** 'GET' for lookup endpoints; omitted (POST) for everything else. */
   httpMethod?: 'GET';
+  /** Names substituted into the URL rather than sent as a body. */
+  pathParams?: string[];
   prefixedName: string;
   description: string;
   endpoint: string;

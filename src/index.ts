@@ -23,7 +23,7 @@ import { registerAllPrompts } from './prompts.js';
 import { registerAllResources } from './resources.js';
 import { MCP_VERSION } from './version.js';
 import { Logger, levelFromEnv } from './logger.js';
-import { parseArgs, printVersion, printHelp, listTools, findToolEndpoint, findToolMethod } from './cli.js';
+import { parseArgs, printVersion, printHelp, listTools, findToolEndpoint, findToolMethod, findToolPathParams } from './cli.js';
 import { installKeepAliveAgent } from './http-agent.js';
 
 // Reuse TCP/TLS sockets across consecutive API calls (saves 30-50 ms per call).
@@ -152,6 +152,31 @@ function resolveAuth(extra: { authInfo?: { token?: string } } | undefined): { ap
   };
 }
 
+/* Substitute `{brace}` segments from the argument object and return the URL
+   plus whatever is left over for the body. A templated endpoint reached with a
+   missing argument would otherwise be called with the literal braces in the
+   path and 404. */
+function applyPathParams(
+  endpoint: string,
+  names: readonly string[] | undefined,
+  args: Record<string, unknown>,
+): { endpoint: string; rest: Record<string, unknown>; missing: string[] } {
+  if (!names || names.length === 0) return { endpoint, rest: args, missing: [] };
+  const rest: Record<string, unknown> = { ...args };
+  const missing: string[] = [];
+  let out = endpoint;
+  for (const n of names) {
+    const v = rest[n];
+    if (v === undefined || v === null || v === '') {
+      missing.push(n);
+      continue;
+    }
+    delete rest[n];
+    out = out.replace(`{${n}}`, encodeURIComponent(String(v)));
+  }
+  return { endpoint: out, rest, missing };
+}
+
 async function callApi(
   endpoint: string,
   body: Record<string, unknown>,
@@ -213,7 +238,12 @@ if (cli.mode === 'call') {
     process.stderr.write(`Invalid --json: ${(e as Error).message}\n`);
     process.exit(1);
   }
-  const result = await callApi(endpoint, body, API_KEY, 'mcp', findToolMethod(cli.toolName ?? ''));
+  const p = applyPathParams(endpoint, findToolPathParams(cli.toolName ?? ''), body);
+  if (p.missing.length > 0) {
+    process.stderr.write(`Missing required path parameter(s): ${p.missing.join(', ')}\n`);
+    process.exit(1);
+  }
+  const result = await callApi(p.endpoint, p.rest, API_KEY, 'mcp', findToolMethod(cli.toolName ?? ''));
   process.stdout.write(result.text + '\n');
   process.exit(0);
 }
@@ -533,9 +563,13 @@ function registerDiscoveryTools(): void {
         return { content: [{ type: 'text' as const, text: `Unknown tool "${name}". Use astroway_find_tool to discover valid tool names.` }], isError: true };
       }
       const transform = transformFor(tool);
-      const body = normalizeTimes(transform((args ?? {}) as Record<string, any>)) as Record<string, unknown>;
+      const raw = normalizeTimes(transform((args ?? {}) as Record<string, any>)) as Record<string, unknown>;
+      const p = applyPathParams(tool.endpoint, tool.pathParams, raw);
+      if (p.missing.length > 0) {
+        return { content: [{ type: 'text' as const, text: `Missing required path parameter(s) for ${name}: ${p.missing.join(', ')}.` }], isError: true };
+      }
       const { apiKey, channel } = resolveAuth(extra as { authInfo?: { token?: string } } | undefined);
-      const result = await callApi(tool.endpoint, body, apiKey, channel, tool.httpMethod ?? 'POST');
+      const result = await callApi(p.endpoint, p.rest, apiKey, channel, tool.httpMethod ?? 'POST');
       return { content: [{ type: 'text' as const, text: result.text }] };
     },
   );
@@ -589,9 +623,16 @@ for (const tool of (DISCOVERY_MODE ? [] : GENERATED_TOOLS)) {
       annotations: tool.annotations,
     },
     async (params, extra) => {
-      const body = normalizeTimes(transform(params as Record<string, any>)) as Record<string, unknown>;
+      const raw = normalizeTimes(transform(params as Record<string, any>)) as Record<string, unknown>;
+      const p = applyPathParams(tool.endpoint, tool.pathParams, raw);
+      if (p.missing.length > 0) {
+        return {
+          content: [{ type: 'text' as const, text: `Missing required path parameter(s): ${p.missing.join(', ')}.` }],
+          isError: true,
+        };
+      }
       const { apiKey, channel } = resolveAuth(extra as { authInfo?: { token?: string } } | undefined);
-      const result = await callApi(tool.endpoint, body, apiKey, channel, tool.httpMethod ?? 'POST');
+      const result = await callApi(p.endpoint, p.rest, apiKey, channel, tool.httpMethod ?? 'POST');
       const response: {
         content: { type: 'text'; text: string }[];
         structuredContent?: { [x: string]: unknown };

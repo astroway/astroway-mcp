@@ -30,9 +30,10 @@ describe('GET lookup tools', () => {
   });
 
   /* The runtime sends no body for these, so a body-shaped schema would ask the
-     agent for fields that are then dropped on the floor. */
-  it('every GET tool uses the empty input schema', () => {
-    for (const t of getTools) {
+     agent for fields that are then dropped on the floor. Templated lookups are
+     the exception: their input is the path parameters. */
+  it('every parameterless GET tool uses the empty input schema', () => {
+    for (const t of getTools.filter((x) => !x.pathParams)) {
       expect(t.schemaKind, `${t.name} should be schemaKind none`).toBe('none');
       expect(t.typedRef, `${t.name} should carry no typedRef`).toBeUndefined();
     }
@@ -47,11 +48,26 @@ describe('GET lookup tools', () => {
     }
   });
 
-  /* Path templates need a parameter surface that does not exist yet. If one
-     appears here it will be called with the literal braces in the URL. */
-  it('no tool endpoint carries an unsubstituted path parameter', () => {
-    for (const t of GENERATED_TOOLS) {
-      expect(/\{[^}]+\}/.test(t.endpoint), `${t.name} has a path template`).toBe(false);
+  /* v1.3: templated endpoints are tools. Every brace must have a matching
+     entry in pathParams, or the runtime calls the URL with literal braces. */
+  it('every templated endpoint declares its braces in pathParams', () => {
+    const templated = GENERATED_TOOLS.filter((t) => /\{[^}]+\}/.test(t.endpoint));
+    expect(templated.length).toBeGreaterThan(15);
+    for (const t of templated) {
+      const braces = [...t.endpoint.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]);
+      expect(t.pathParams, `${t.name} has braces but no pathParams`).toBeDefined();
+      for (const b of braces) {
+        expect(t.pathParams, `${t.name} missing pathParam ${b}`).toContain(b);
+      }
+      /* The input schema has to ask for them, otherwise an agent has no way to
+         supply what the URL needs. */
+      expect(t.schemaKind, `${t.name} should carry a typed input schema`).toBe('typed');
+    }
+  });
+
+  it('a tool without braces never claims pathParams', () => {
+    for (const t of GENERATED_TOOLS.filter((x) => !/\{[^}]+\}/.test(x.endpoint))) {
+      expect(t.pathParams, `${t.name} should have no pathParams`).toBeUndefined();
     }
   });
 });
