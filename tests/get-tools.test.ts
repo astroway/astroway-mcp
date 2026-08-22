@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { GENERATED_TOOLS } from '../src/tools.generated.js';
+import { GENERATED_TOOLS, TYPED_SCHEMAS } from '../src/tools.generated.js';
 
 /**
  * v1.2 — GET lookups became tools. Before this every generator filtered on
@@ -8,6 +8,9 @@ import { GENERATED_TOOLS } from '../src/tools.generated.js';
  * ways the feature can silently rot: the generator quietly reverting to
  * POST-only, and a GET tool being registered with a body-shaped input schema.
  */
+/* GET paths whose input travels in the query string rather than a body. */
+const QUERY_GETS = new Set(['/agent/tools']);
+
 describe('GET lookup tools', () => {
   const getTools = GENERATED_TOOLS.filter((t) => t.httpMethod === 'GET');
 
@@ -30,13 +33,30 @@ describe('GET lookup tools', () => {
   });
 
   /* The runtime sends no body for these, so a body-shaped schema would ask the
-     agent for fields that are then dropped on the floor. Templated lookups are
-     the exception: their input is the path parameters. */
-  it('every parameterless GET tool uses the empty input schema', () => {
-    for (const t of getTools.filter((x) => !x.pathParams)) {
+     agent for fields that are then dropped on the floor. Two exceptions, both
+     of which travel outside the body: a templated lookup takes its path
+     parameters, and a GET that declares query parameters takes those. */
+  it('every GET tool with nothing to pass uses the empty input schema', () => {
+    const takesNothing = getTools.filter((x) => !x.pathParams && !QUERY_GETS.has(x.endpoint));
+    expect(takesNothing.length).toBeGreaterThan(30);
+    for (const t of takesNothing) {
       expect(t.schemaKind, `${t.name} should be schemaKind none`).toBe('none');
       expect(t.typedRef, `${t.name} should carry no typedRef`).toBeUndefined();
     }
+  });
+
+  it('a GET that declares query parameters can receive them', () => {
+    /* GET /agent/tools takes format, select, q and limit. Registering it with
+       an empty schema, which is what happened until 2026-08-22, handed an agent
+       all 715 tool definitions with no way to ask for fewer. */
+    const tools = GENERATED_TOOLS.find((t) => t.endpoint === '/agent/tools');
+    expect(tools, '/agent/tools is missing from the catalogue').toBeDefined();
+    expect(tools!.schemaKind).toBe('typed');
+    expect(tools!.typedRef).toMatch(/^QueryParams_/);
+    const schema = TYPED_SCHEMAS[tools!.typedRef!];
+    expect(schema, `${tools!.typedRef} is missing from TYPED_SCHEMAS`).toBeDefined();
+    const shape = (schema as unknown as { shape: Record<string, unknown> }).shape;
+    expect(Object.keys(shape).sort()).toEqual(['format', 'limit', 'q', 'select']);
   });
 
   it('POST tools are untouched and never carry httpMethod', () => {

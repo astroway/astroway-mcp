@@ -112,3 +112,64 @@ describe('GENERATED_TOOLS prefixedName coverage', () => {
     expect(set.size).toBe(names.length);
   });
 });
+
+describe('derivePrefix — the separator must not decide a tool name', () => {
+  /* Group titles carried an em-dash until the em-dash sweep went through
+     api-calc on 2026-08-17 and made them colons. Both the override table and
+     the head split were written against the em-dash alone, so a punctuation
+     change renamed 118 tools: the whole title became the prefix and
+     `astroway_chinese_feng_shui_kua` came out as
+     `astroway_chinese_zodiac_feng_shui_chinese_feng_shui_kua`. These tests use
+     both spellings of the same group on purpose. */
+  const pairs: [string, string, string][] = [
+    ['Chinese — Zodiac & Feng Shui', 'Chinese: Zodiac & Feng Shui', 'chinese'],
+    ['Zi Wei Dou Shu (Purple Star) — MVP', 'Zi Wei Dou Shu (Purple Star): MVP', 'ziwei'],
+    ['Tarot — Rider-Waite-Smith', 'Tarot: Rider-Waite-Smith', 'tarot'],
+    ['Numerology — Kabbalistic (phonetic)', 'Numerology: Kabbalistic (phonetic)', 'numerology'],
+    ['Hellenistic — Hand tradition', 'Hellenistic: Hand tradition', 'hellenistic'],
+  ];
+  for (const [emDash, colon, expected] of pairs) {
+    it(`${colon} → ${expected}, either separator`, () => {
+      expect(derivePrefix(emDash)).toBe(expected);
+      expect(derivePrefix(colon)).toBe(expected);
+    });
+  }
+
+  it('names an agent already learned are still in the catalogue', () => {
+    /* A tool name is an API. This is the check that would have caught the
+       rename, because it looks at the built catalogue rather than at a
+       hand-written group title. */
+    const names = new Set(GENERATED_TOOLS.map((t) => t.prefixedName));
+    for (const n of [
+      'astroway_chinese_feng_shui_kua',
+      'astroway_chinese_zodiac_animal',
+      'astroway_ziwei_full_chart',
+      'astroway_tarot_rider_waite_daily',
+      'astroway_numerology_kabbalistic_life_path',
+      'astroway_hellenistic_hand_bounds',
+      'astroway_western_chart',
+    ]) {
+      expect(names.has(n), `${n} is missing from the catalogue`).toBe(true);
+    }
+  });
+
+  it('a prefix stays a namespace, not a whole title', () => {
+    /* The stale override table turned `Zi Wei Dou Shu (Purple Star): MVP` into
+       the prefix `zi_wei_dou_shu_purple_star_mvp` and `Chinese: Zodiac & Feng
+       Shui` into `chinese_zodiac_feng_shui`, so every tool underneath was
+       renamed. A prefix is one or two words; anything longer means the split
+       stopped working. */
+    /* One group has always produced a long prefix, because its title carries no
+       separator and no override:
+       `astroway_zodiac_signs_per_sign_deep_zodiac_aries` shipped that way in
+       1.2.0 and is left alone here. Adding the override would rename 12 tools,
+       which is the very thing this describe block exists to prevent; it belongs
+       in a release that says so and keeps the old names as aliases. */
+    const KNOWN_LONG = new Set(['Zodiac Signs (Per-Sign Deep)']);
+    const groups = [...new Set(GENERATED_TOOLS.map((t) => t.group))].filter((g) => !KNOWN_LONG.has(g));
+    const tooLong = groups
+      .map((g) => [g, derivePrefix(g)] as const)
+      .filter(([, prefix]) => prefix.split('_').length > 2);
+    expect(tooLong.map(([g, p]) => `${g} → ${p}`)).toEqual([]);
+  });
+});

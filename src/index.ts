@@ -177,6 +177,21 @@ function applyPathParams(
   return { endpoint: out, rest, missing };
 }
 
+/** Query string for a GET tool, dropping anything the caller left empty. */
+function toQueryString(args: Record<string, unknown>): string {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(args ?? {})) {
+    if (v === undefined || v === null || v === '') continue;
+    if (Array.isArray(v)) {
+      for (const item of v) if (item !== undefined && item !== null && item !== '') params.append(k, String(item));
+    } else {
+      params.set(k, String(v));
+    }
+  }
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
+
 async function callApi(
   endpoint: string,
   body: Record<string, unknown>,
@@ -184,12 +199,16 @@ async function callApi(
   channel: 'mcp' | 'mcp-http' = 'mcp',
   method: 'GET' | 'POST' = 'POST',
 ): Promise<CallResult> {
-  const url = `${BASE_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
-  log.debug(`${method} ${url}`, { body: JSON.stringify(body).slice(0, 500) });
+  /* GET lookups carry no body. Sending one is not merely redundant: fetch
+     rejects a GET with a body outright. Content-Type goes with it. What the
+     caller passed travels in the query string instead, which is where the spec
+     declares it: without this, the agent-tools lookup accepted format, select,
+     q and limit and then dropped all four. */
+  const isGet = method === 'GET';
+  const query = isGet ? toQueryString(body) : '';
+  const url = `${BASE_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}${query}`;
+  log.debug(`${method} ${url}`, { body: isGet ? '' : JSON.stringify(body).slice(0, 500) });
   try {
-    /* GET lookups carry no body. Sending one is not merely redundant: fetch
-       rejects a GET with a body outright. Content-Type goes with it. */
-    const isGet = method === 'GET';
     const res = await fetchWithRetry(url, {
       method,
       headers: {

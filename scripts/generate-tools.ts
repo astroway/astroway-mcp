@@ -252,14 +252,44 @@ const GROUP_PREFIX_OVERRIDES: Record<string, string> = {
   'Geomancy (Agrippa)': 'geomancy',
   'Elder Futhark Runes': 'runes',
   'Palmistry (Cheiro)': 'palmistry',
+  /* Without this the prefix is `agent_platform`, and the group filter reads
+     only the first word after `astroway_`, so ASTROWAY_TOOL_GROUPS=agent would
+     be the way to select a tool named astroway_agent_platform_agent_tools.
+     Named before its first release, so nothing is renamed by it. */
+  'Agent Platform': 'agent',
 };
 
+/**
+ * Group titles carry a qualifier after a separator, and the separator changed:
+ * the em-dash in `Chinese <em-dash> Zodiac & Feng Shui` became a colon when the
+ * prose sweep went through api-calc on 2026-08-17. Both the override lookup and
+ * the head split were written against the old character alone, so 118 tools
+ * were renamed by a punctuation change: the whole title became the prefix, and
+ * `astroway_chinese_feng_shui_kua` came out as
+ * `astroway_chinese_zodiac_feng_shui_chinese_feng_shui_kua`.
+ *
+ * Matching is on the letters now, so neither separator, nor a future one, moves
+ * a tool name. A tool name is an API: an agent that learned it should keep
+ * finding it.
+ */
+const GROUP_SEPARATOR = /[—:]/;
+
+/** `Chinese — Zodiac & Feng Shui` and `Chinese: Zodiac & Feng Shui` both → `chinese zodiac feng shui`. */
+function normaliseGroupKey(group: string): string {
+  return group.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+const OVERRIDES_BY_NORMALISED_KEY = new Map(
+  Object.entries(GROUP_PREFIX_OVERRIDES).map(([k, v]) => [normaliseGroupKey(k), v]),
+);
+
 export function derivePrefix(group: string): string {
-  if (GROUP_PREFIX_OVERRIDES[group]) return GROUP_PREFIX_OVERRIDES[group];
-  // 'Numerology — Pythagorean' → 'numerology'
-  // 'Hellenistic — Brennan tradition' → 'hellenistic'
-  // 'Tarot — Rider-Waite-Smith' → 'tarot'
-  const head = group.split('—')[0].trim();
+  const override = OVERRIDES_BY_NORMALISED_KEY.get(normaliseGroupKey(group));
+  if (override) return override;
+  // 'Numerology: Pythagorean' → 'numerology'
+  // 'Hellenistic: Brennan tradition' → 'hellenistic'
+  // 'Tarot: Rider-Waite-Smith' → 'tarot'
+  const head = group.split(GROUP_SEPARATOR)[0]!.trim();
   return head.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
 
@@ -331,6 +361,7 @@ async function main(): Promise<void> {
   const skippedReason: Record<string, number> = {};
   let costAnnotated = 0;
   let typedCount = 0;
+  let queryCount = 0;
 
   for (const [path, methods] of Object.entries(doc.paths)) {
     /* v1.2 — GET lookups become tools too. Before this, every generator
@@ -377,16 +408,13 @@ async function main(): Promise<void> {
     const body = example != null ? JSON.stringify(example) : null;
     const desc = op.description ?? op.summary ?? '';
 
-    /* GET lookups take no request body. Every one of them currently declares
-       zero query parameters in the spec, so the tool takes no input at all;
-       schemaKind 'none' registers an empty inputSchema. A GET that later
-       declares query params needs a schema built from op.parameters, and this
-       is the branch to extend. */
+    /* GET lookups take no request body. Most declare no query parameters
+       either, and those register an empty inputSchema through schemaKind
+       'none'. A GET that does declare them gets a schema built from
+       op.parameters, the same way a templated path does: /agent/tools takes
+       format, select, q and limit, and registering it without them would hand
+       an agent 715 tool definitions with no way to ask for fewer. */
     const queryParams = (op.parameters ?? []).filter((prm: any) => prm?.in === 'query');
-    if (httpMethod === 'GET' && queryParams.length > 0) {
-      console.warn(`[generate-tools] GET ${path} declares ${queryParams.length} query param(s); registering with an empty input schema until parameter support lands`);
-      skippedReason['get-query-params-ignored'] = (skippedReason['get-query-params-ignored'] ?? 0) + 1;
-    }
 
     // v0.4 — prefer typed schema if openapi.json provides $ref
     const schemaSpec = op.requestBody?.content?.['application/json']?.schema;
@@ -409,6 +437,21 @@ async function main(): Promise<void> {
       kind = 'typed';
       typedRef = compName;
       typedCount++;
+    } else if (httpMethod === 'GET' && queryParams.length > 0) {
+      const synthetic = {
+        type: 'object',
+        properties: Object.fromEntries(queryParams.map((prm: any) => [
+          String(prm.name),
+          { ...(prm.schema ?? { type: 'string' }), description: prm.description },
+        ])),
+        required: queryParams.filter((prm: any) => prm.required === true).map((prm: any) => String(prm.name)),
+      };
+      const compName = `QueryParams_${sanitizeName(path)}`;
+      syntheticComponents[compName] = synthetic;
+      kind = 'typed';
+      typedRef = compName;
+      typedCount++;
+      queryCount++;
     } else if (httpMethod === 'GET') {
       kind = 'none';
     } else if (schemaSpec?.$ref) {
@@ -619,6 +662,7 @@ export const GENERATED_TOOLS: readonly GeneratedTool[] = ${JSON.stringify(unique
   console.log(`[generate-tools] cost annotated: ${costAnnotated}/${unique.length}`);
   console.log(`[generate-tools] titles from op.summary: ${titledCount}/${unique.length}`);
   console.log(`[generate-tools] typed input schemas: ${typedCount} tools, ${usedComponents.size} components`);
+  console.log(`[generate-tools] GET tools carrying query parameters: ${queryCount}`);
   console.log(`[generate-tools] typed output schemas: ${outputCount}/${unique.length}`);
   console.log(`[generate-tools] schema kinds: ${JSON.stringify(kindCounts)}`);
   console.log(`[generate-tools] annotations: ${JSON.stringify(annotationStats)}`);

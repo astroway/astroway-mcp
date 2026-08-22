@@ -91,25 +91,27 @@ describe('F18 — descriptions drop example body for non-generic kinds', () => {
     expect(withExample, withExample.map((t) => t.name).join(',')).toHaveLength(0);
   });
 
-  it('chart-shape tools have no example block', () => {
-    const charts = GENERATED_TOOLS.filter((t) => t.schemaKind === 'chart');
-    expect(charts.length).toBeGreaterThan(0);
-    expect(charts.filter((t) => /Example request body/.test(t.description))).toHaveLength(0);
+  it('no tool is left to the heuristic classifier', () => {
+    /* The seven hand-written shapes (chart, twoChart, chartTarget,
+       horoscopeSign, horoscopeCompat, year, date) and the generic fallback
+       existed because the spec published 246 request bodies as a bare
+       {type: object}. api-calc closed that on 2026-08-22, so every POST body
+       arrives as a $ref and every parameterless GET registers an empty schema.
+       The fallback stays in the generator as the safety net for a spec that
+       regresses; this asserts it is not carrying anyone today.
+       If it fires again, the fix belongs in api-calc's PATH_SCHEMAS, not here. */
+    const guessed = GENERATED_TOOLS.filter(
+      (t) => t.schemaKind !== 'typed' && t.schemaKind !== 'none',
+    );
+    expect(guessed.map((t) => `${t.prefixedName} (${t.schemaKind})`)).toEqual([]);
   });
 
-  it('date-shape tools have no example block', () => {
-    const dates = GENERATED_TOOLS.filter((t) => t.schemaKind === 'date');
-    expect(dates.length).toBeGreaterThan(0);
-    expect(dates.filter((t) => /Example request body/.test(t.description))).toHaveLength(0);
-  });
-
-  it('generic-fallback tools KEEP the example body (only signal they have)', () => {
-    const generics = GENERATED_TOOLS.filter((t) => t.schemaKind === 'generic');
-    expect(generics.length).toBeGreaterThan(0);
-    // Most generics have an example in their api manifest entry. We assert
-    // that AT LEAST ONE retains the example block — the long tail with no
-    // example in the manifest still gets nothing, which is fine.
-    const withExample = generics.filter((t) => /Example request body/.test(t.description));
-    expect(withExample.length).toBeGreaterThan(generics.length * 0.5);
+  it('describes a body only where the tool takes one', () => {
+    /* A 'none' tool is a GET lookup: printing an example request body for it
+       tells an agent to send something a GET cannot carry. */
+    const noneWithExample = GENERATED_TOOLS
+      .filter((t) => t.schemaKind === 'none')
+      .filter((t) => /Example request body/.test(t.description));
+    expect(noneWithExample.map((t) => t.prefixedName)).toEqual([]);
   });
 });
