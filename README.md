@@ -175,7 +175,7 @@ Tool categories, with examples below. Run `npx @astroway/mcp` once and ask the a
 | **Numerology** | Pythagorean, Chaldean, Kabbalistic, Vedic, Destiny Matrix |
 | **Esoteric** | I Ching, sabian symbols, fortune dice, color & gemstone correspondences |
 | **Reference** | signs, planets, houses, aspects, nakshatras, Hellenistic Lots |
-| **AI Interpretations** | natal, synastry, transits, Ukrainian/English |
+| **AI Interpretations** | natal, synastry, transits; chart-grounded chat with four personas; 21 languages |
 | **Horoscope** | daily, weekly, monthly, compatibility (zodiac sign-based) |
 
 ---
@@ -201,6 +201,9 @@ After connecting the server, try these in Claude Desktop:
 
 **Human Design**
 > What's the Human Design type, strategy and authority for someone born 1990-03-15 14:30 Kyiv (50.45 30.52 UTC+2)? List their defined centers and incarnation cross.
+
+**Chart-grounded chat**
+> Using astroway_mcp_ai_chat, ask what my Saturn placement means. Born 1990-03-15 14:30 Kyiv (50.45 30.52 UTC+2). The answer should quote the house and the aspect orbs it is based on.
 
 ---
 
