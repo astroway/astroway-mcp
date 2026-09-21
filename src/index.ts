@@ -17,6 +17,7 @@ import { deepOpenOutput } from './output-schema.js';
 import { REFERENCE_RESOURCES } from './resources.generated.js';
 import { fetchAccountStatus } from './tools/account-status.js';
 import { loadCostManifest, estimateOne, formatEstimate } from './tools/cost-estimate.js';
+import { applyPathParams, toQueryString } from './http-params.js';
 import { fetchWithRetry } from './retry.js';
 import { normalizeTimes } from './normalize.js';
 import { registerAllPrompts } from './prompts.js';
@@ -156,42 +157,6 @@ function resolveAuth(extra: { authInfo?: { token?: string } } | undefined): { ap
    plus whatever is left over for the body. A templated endpoint reached with a
    missing argument would otherwise be called with the literal braces in the
    path and 404. */
-function applyPathParams(
-  endpoint: string,
-  names: readonly string[] | undefined,
-  args: Record<string, unknown>,
-): { endpoint: string; rest: Record<string, unknown>; missing: string[] } {
-  if (!names || names.length === 0) return { endpoint, rest: args, missing: [] };
-  const rest: Record<string, unknown> = { ...args };
-  const missing: string[] = [];
-  let out = endpoint;
-  for (const n of names) {
-    const v = rest[n];
-    if (v === undefined || v === null || v === '') {
-      missing.push(n);
-      continue;
-    }
-    delete rest[n];
-    out = out.replace(`{${n}}`, encodeURIComponent(String(v)));
-  }
-  return { endpoint: out, rest, missing };
-}
-
-/** Query string for a GET tool, dropping anything the caller left empty. */
-function toQueryString(args: Record<string, unknown>): string {
-  const params = new URLSearchParams();
-  for (const [k, v] of Object.entries(args ?? {})) {
-    if (v === undefined || v === null || v === '') continue;
-    if (Array.isArray(v)) {
-      for (const item of v) if (item !== undefined && item !== null && item !== '') params.append(k, String(item));
-    } else {
-      params.set(k, String(v));
-    }
-  }
-  const qs = params.toString();
-  return qs ? `?${qs}` : '';
-}
-
 async function callApi(
   endpoint: string,
   body: Record<string, unknown>,
