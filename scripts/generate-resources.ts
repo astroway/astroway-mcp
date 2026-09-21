@@ -42,9 +42,21 @@ const REFERENCES: ReferenceSpec[] = [
 
 interface ApiEnvelope { ok: boolean; data?: unknown; error?: { code?: string; message?: string } }
 
+/**
+ * Our own key when one is available.
+ *
+ * `/reference/*` answers without a key, and this build took that as licence to
+ * call it anonymously. Anonymous callers share one 30-per-hour bucket with the
+ * whole internet, so two rebuilds in an hour exhausted it and the third failed
+ * on `/reference/signs -> 429`. It happened on 2026-09-20 and again on
+ * 2026-09-21. A build is not an anonymous caller and should not be queueing
+ * behind one.
+ */
+const API_KEY = process.env.ASTROWAY_API_KEY ?? '';
+
 async function fetchOne(spec: ReferenceSpec): Promise<unknown> {
   const url = `${BASE}/reference/${spec.path}`;
-  const res = await fetch(url);
+  const res = await fetch(url, API_KEY ? { headers: { 'X-Api-Key': API_KEY } } : undefined);
   if (!res.ok) {
     throw new Error(`${url} → ${res.status} ${res.statusText}`);
   }
