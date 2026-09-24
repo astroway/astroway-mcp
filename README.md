@@ -174,7 +174,7 @@ Tool categories, with examples below. Run `npx @astroway/mcp` once and ask the a
 | **Tarot** | Rider-Waite-Smith, Marseille, Lenormand decks; spreads + card lookups |
 | **Numerology** | Pythagorean, Chaldean, Kabbalistic, Vedic, Destiny Matrix |
 | **Esoteric** | I Ching, sabian symbols, fortune dice, color & gemstone correspondences |
-| **Reference** | signs, planets, houses, aspects, nakshatras, Hellenistic Lots |
+| **Reference** | signs, planets, houses, aspects, nakshatras, Hellenistic Lots, natal texts (edited interpretation copy, no AI) |
 | **AI Interpretations** | natal, synastry, transits; chart-grounded chat with four personas; 21 languages |
 | **Horoscope** | daily, weekly, monthly, compatibility (zodiac sign-based) |
 

@@ -9,7 +9,7 @@ import { GENERATED_TOOLS, TYPED_SCHEMAS } from '../src/tools.generated.js';
  * POST-only, and a GET tool being registered with a body-shaped input schema.
  */
 /* GET paths whose input travels in the query string rather than a body. */
-const QUERY_GETS = new Set(['/agent/tools']);
+const QUERY_GETS = new Set(['/agent/tools', '/natal-texts']);
 
 describe('GET lookup tools', () => {
   const getTools = GENERATED_TOOLS.filter((t) => t.httpMethod === 'GET');

@@ -152,7 +152,18 @@ const TIER_NAMES: Record<string, string> = {
   TIER_7: 'Tier 7', TIER_8: 'Tier 8',
 };
 
-function buildDescription(rawDesc: string, body: string | null, group: string, cost?: number, tier?: string, deprecated?: boolean, kind?: SchemaKind): string {
+/**
+ * v1.5+: MCP-only guardrail lines, appended after trimDesc() so they never
+ * fall inside the 380-char cut. The OpenAPI description is written for a
+ * human reading API docs; this is written for the model holding the tool
+ * result, for the handful of endpoints where an empty field is exactly what
+ * an LLM tends to paper over on its own. Keyed by request path.
+ */
+const AGENT_GUARDRAILS: Record<string, string> = {
+  '/natal-texts': 'Keys with no text in the requested `lang` come back listed in `missing`, not in `texts`. Do not invent, translate or guess a replacement body for a key that comes back in `missing`; report it as unavailable.',
+};
+
+function buildDescription(rawDesc: string, body: string | null, group: string, cost?: number, tier?: string, deprecated?: boolean, kind?: SchemaKind, endpointPath?: string): string {
   let out = trimDesc(rawDesc);
   out += `\n\n[Group: ${group}]`;
   if (cost !== undefined) {
@@ -182,6 +193,10 @@ function buildDescription(rawDesc: string, body: string | null, group: string, c
   // tokens in those tool descriptions.
   if (kind === 'generic' && body && body.trim() && body !== 'null' && body.length < 320) {
     out += `\n\nExample request body: ${body.trim()}`;
+  }
+  const guardrail = endpointPath ? AGENT_GUARDRAILS[endpointPath] : undefined;
+  if (guardrail) {
+    out += `\n\n${guardrail}`;
   }
   return out;
 }
@@ -247,6 +262,11 @@ const GROUP_PREFIX_OVERRIDES: Record<string, string> = {
   'Mayan Calendars': 'mayan',
   'Chinese — Zodiac & Feng Shui': 'chinese',
   'Zi Wei Dou Shu (Purple Star) — MVP': 'ziwei',
+  /* api-calc dropped the "MVP" qualifier from this tag once the feature left
+     MVP status; the group now ships under the bare title. Kept alongside the
+     old key rather than replacing it, so a cached description or an older
+     openapi.json snapshot carrying "MVP" still resolves to the same prefix. */
+  'Zi Wei Dou Shu (Purple Star)': 'ziwei',
   'Destiny Matrix': 'destiny_matrix',
   'I Ching (Standalone)': 'iching',
   'Geomancy (Agrippa)': 'geomancy',
@@ -490,7 +510,7 @@ async function main(): Promise<void> {
       ...(httpMethod === 'GET' ? { httpMethod: 'GET' as const } : {}),
       ...(braceNames.length > 0 ? { pathParams: braceNames } : {}),
       prefixedName,
-      description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated, kind),
+      description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated, kind, path),
       endpoint: path,
       schemaKind: kind,
       group,
