@@ -127,7 +127,7 @@ Trade-off: a tool dispatched through `astroway_call_tool` returns its result as 
 
 ### Stability
 
-- **Catalogue is frozen for the duration of a session.** The 624 tools, 12 prompts, and 14 resources are baked into the published npm package and do not change at runtime. (The MCP `listChanged` capability is advertised by the SDK, but no `*/list_changed` notification is ever emitted by this build. If your client caches the catalogue after the first `tools/list` it will stay correct for the whole connection.)
+- **Catalogue is frozen for the duration of a session.** The whole catalogue (tools, prompts and resources) is baked into the published npm package and do not change at runtime. (The MCP `listChanged` capability is advertised by the SDK, but no `*/list_changed` notification is ever emitted by this build. If your client caches the catalogue after the first `tools/list` it will stay correct for the whole connection.)
 - **Tool identifiers are stable inside a major version.** A name shipped under `astroway_<group>_<tool>` won't be renamed or removed within the same `v0.x` minor without a deprecation note in `CHANGELOG.md`. Across major bumps (`v1` → `v2`) any breaking change is announced and the legacy escape (`MCP_FLAT_TOOLS=1`) carries you across one minor.
 - **Tool input shape is stable inside a minor version.** Tightening (regex, range, enum) ships in patches; adding required fields requires a minor bump.
 - **Refresh the catalogue by reinstalling.** `npm i -g @astroway/mcp@latest` (or the `npx -y @astroway/mcp` form already in your client config) pulls the current set on the next start.
@@ -138,7 +138,7 @@ After restarting your MCP client:
 
 1. Open the MCP indicator (bottom of the chat input in Claude Desktop, status bar in Cursor).
 2. You should see `astroway` listed as an active server.
-3. Hover or click, and the badge shows `624 tools registered + 12 prompts + 14 resources` (counts as of the latest release).
+3. Hover or click, and the badge shows how many tools, prompts and resources registered; `npx @astroway/mcp --list-tools` prints the full tool list for the installed version.
 4. Cold-start takes 2-3 seconds the first time (Node + TLS handshake to api.astroway.info).
 5. Sanity check from any terminal: `npx @astroway/mcp --version` prints the package version, `npx @astroway/mcp --list-tools synastry` prints matching tools.
 
