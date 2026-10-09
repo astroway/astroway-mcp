@@ -26,6 +26,7 @@ import { MCP_VERSION } from './version.js';
 import { Logger, levelFromEnv } from './logger.js';
 import { parseArgs, printVersion, printHelp, listTools, findToolEndpoint, findToolMethod, findToolPathParams } from './cli.js';
 import { installKeepAliveAgent } from './http-agent.js';
+import { stdioInstructions } from './instructions.js';
 
 // Reuse TCP/TLS sockets across consecutive API calls (saves 30-50 ms per call).
 installKeepAliveAgent();
@@ -397,6 +398,7 @@ const server = new McpServer(
     // Inspector, etc.) can subscribe to logging notifications and call
     // logging/setLevel to dynamically change verbosity at runtime.
     capabilities: { logging: {} },
+    instructions: stdioInstructions(DISCOVERY_MODE),
   },
 );
 log.attachMcp({ sendLoggingMessage: server.server.sendLoggingMessage.bind(server.server) });

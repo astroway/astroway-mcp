@@ -140,10 +140,13 @@ function classifyFallback(endpointPath: string, body: string | null): SchemaKind
   return 'generic';
 }
 
-function trimDesc(desc: string, max = 380): string {
+function trimDesc(desc: string, max = 600): string {
   const clean = desc.replace(/\s+/g, ' ').trim();
   if (clean.length <= max) return clean;
-  return clean.slice(0, max - 1) + '…';
+  // End on a whole sentence when one fits: a clause cut mid-word reads as a different instruction.
+  const cut = clean.slice(0, max);
+  const stop = cut.lastIndexOf('. ');
+  return stop > max / 2 ? cut.slice(0, stop + 1) : cut.slice(0, max - 1) + '…';
 }
 
 const TIER_NAMES: Record<string, string> = {
@@ -163,9 +166,12 @@ const AGENT_GUARDRAILS: Record<string, string> = {
   '/natal-texts': 'Keys with no text in the requested `lang` come back listed in `missing`, not in `texts`. Do not invent, translate or guess a replacement body for a key that comes back in `missing`; report it as unavailable.',
 };
 
-function buildDescription(rawDesc: string, body: string | null, group: string, cost?: number, tier?: string, deprecated?: boolean, kind?: SchemaKind, endpointPath?: string): string {
+function buildDescription(rawDesc: string, body: string | null, group: string, cost?: number, tier?: string, deprecated?: boolean, kind?: SchemaKind, endpointPath?: string, httpMethod?: string, required?: string[]): string {
   let out = trimDesc(rawDesc);
   out += `\n\n[Group: ${group}]`;
+  // The REST route lets an agent match a tool to docs, find_endpoint results and SDK code.
+  if (endpointPath) out += `\n[Endpoint: ${httpMethod ?? 'POST'} /v1${endpointPath}]`;
+  if (required && required.length) out += `\n[Required: ${required.join(', ')}]`;
   if (cost !== undefined) {
     const tierLabel = tier && TIER_NAMES[tier] ? ` (${TIER_NAMES[tier]})` : '';
     const formatted = cost >= 1000 ? cost.toLocaleString('en-US') : String(cost);
@@ -489,6 +495,8 @@ async function main(): Promise<void> {
 
     const costInfo = costs.endpoints[path];
     if (costInfo) costAnnotated++;
+    const requiredFields = (ref?: string): string[] =>
+      ref ? ((syntheticComponents[ref] ?? components[ref])?.required ?? []) : [];
 
     const toolName = sanitizeName(path);
     const annotations = classifyAnnotations(group, toolName);
@@ -510,7 +518,7 @@ async function main(): Promise<void> {
       ...(httpMethod === 'GET' ? { httpMethod: 'GET' as const } : {}),
       ...(braceNames.length > 0 ? { pathParams: braceNames } : {}),
       prefixedName,
-      description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated, kind, path),
+      description: buildDescription(desc, body, group, costInfo?.cost, costInfo?.tier, op.deprecated, kind, path, httpMethod, requiredFields(typedRef)),
       endpoint: path,
       schemaKind: kind,
       group,

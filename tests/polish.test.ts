@@ -57,3 +57,23 @@ describe('F20 — BASE_URL allowlist', () => {
     }
   });
 });
+
+describe('T3 — descriptions name the route and the required inputs', () => {
+  it('every tool names its own REST route', () => {
+    const wrong = GENERATED_TOOLS.filter((t) => {
+      const m = /\n\[Endpoint: (GET|POST) \/v1(\S+)\]/.exec(t.description);
+      return !m || m[2] !== t.endpoint || m[1] !== (t.httpMethod ?? 'POST');
+    });
+    expect(wrong.map((t) => t.prefixedName)).toEqual([]);
+  });
+
+  it('the natal chart tool lists the three fields its schema requires', () => {
+    const sample = GENERATED_TOOLS.find((t) => t.prefixedName === 'astroway_western_chart');
+    expect(sample?.description).toContain('[Required: date, latitude, longitude]');
+  });
+
+  it('no description is cut mid-word when a sentence boundary was available', () => {
+    const cut = GENERATED_TOOLS.filter((t) => /[a-z]…\n/.test(t.description) && /\. [A-Z]/.test(t.description.split('\n')[0]!.slice(300)));
+    expect(cut.map((t) => t.prefixedName)).toEqual([]);
+  });
+});
