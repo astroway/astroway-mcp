@@ -37,7 +37,16 @@ describe('GET lookup tools', () => {
      of which travel outside the body: a templated lookup takes its path
      parameters, and a GET that declares query parameters takes those. */
   it('every GET tool with nothing to pass uses the empty input schema', () => {
-    const takesNothing = getTools.filter((x) => !x.pathParams && !QUERY_GETS.has(x.endpoint));
+    /* Query GETs are recognised by their generated QueryParams_ schema rather than a typed list:
+       the hand list failed the release every time a GET with query parameters shipped (geo, remedies,
+       calendar ics on 2026-11-07). Each must still carry a non-empty query shape. */
+    const isQueryGet = (x: (typeof getTools)[number]) => QUERY_GETS.has(x.endpoint) || /^QueryParams_/.test(x.typedRef ?? '');
+    for (const t of getTools.filter(isQueryGet)) {
+      const schema = TYPED_SCHEMAS[t.typedRef!] as unknown as { shape?: Record<string, unknown> } | undefined;
+      expect(schema, `${t.name}: ${t.typedRef} is missing from TYPED_SCHEMAS`).toBeDefined();
+      expect(Object.keys(schema!.shape ?? {}).length, `${t.name} has an empty query schema`).toBeGreaterThan(0);
+    }
+    const takesNothing = getTools.filter((x) => !x.pathParams && !isQueryGet(x));
     expect(takesNothing.length).toBeGreaterThan(30);
     for (const t of takesNothing) {
       expect(t.schemaKind, `${t.name} should be schemaKind none`).toBe('none');

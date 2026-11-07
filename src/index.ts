@@ -409,7 +409,7 @@ server.registerTool(
   'astroway_account_status',
   {
     title: 'Account Status',
-    description: 'Check current API key status: tier, credit balance, rate limits, monthly cycle reset. Run this BEFORE invoking expensive endpoints (Tier 4+ at 100+ credits, Tier 6/7 at 500-5000 credits) to confirm the user has budget. Returns plain-text human-readable summary.',
+    description: 'Check the calling API key: plan, credit balance and when the billing period ends. Run this BEFORE invoking expensive endpoints (Tier 4+ at 100+ credits, Tier 6/7 at 500-5000 credits) to confirm the user has budget. Returns plain-text human-readable summary.',
     inputSchema: {},
     annotations: {
       readOnlyHint: true,

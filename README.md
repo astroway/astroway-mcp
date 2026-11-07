@@ -1,19 +1,75 @@
 # @astroway/mcp
 
-> MCP (Model Context Protocol) server exposing **every endpoint of the [AstroWay Calculation API](https://api.astroway.info)** as tools for Claude Desktop, Cursor, and any MCP-compatible AI agent.
+> The AstroWay astrology API as MCP tools: natal charts, synastry, transits, Vedic dashas, BaZi, Human Design, Tarot, Numerology and finished PDF reports, for Claude, Cursor and any MCP client. Use the hosted server with no install, or run this package locally.
 
 [![npm version](https://img.shields.io/npm/v/@astroway/mcp.svg?style=flat&color=blue)](https://www.npmjs.com/package/@astroway/mcp)
 [![npm downloads](https://img.shields.io/npm/dm/@astroway/mcp.svg?style=flat)](https://www.npmjs.com/package/@astroway/mcp)
 [![license: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-1.0-purple.svg)](https://modelcontextprotocol.io)
 
-Natal charts, synastry, transits, Vedic dashas (Vimshottari, Yogini, Ashtottari, Kalachakra), 16 Vargas, Tarot (Rider-Waite / Marseille / Lenormand), Numerology (5 systems), Human Design, AI horoscopes, all wrapped as MCP tools that the agent can call directly.
-
-Tools are auto-generated from the live API manifest at build time, so each release ships every endpoint that exists in production. No manual tool-list maintenance.
+Tools are generated from the live [OpenAPI spec](https://api.astroway.info/v1/openapi.json), so every endpoint of the API is a tool, with its route and required fields in the description.
 
 ---
 
-## Install
+## Hosted server (no install)
+
+```
+https://mcp.astroway.info/mcp
+```
+
+Streamable HTTP, authenticated with your API key as a Bearer token or by signing in through OAuth.
+
+**Claude Code**, one line:
+
+```bash
+claude mcp add --transport http astroway https://mcp.astroway.info/mcp --header "Authorization: Bearer aw_live_YOUR_KEY"
+```
+
+**claude.ai**: Settings, Connectors, Add custom connector, URL `https://mcp.astroway.info/mcp`. When it offers "No sign-in", pick **"Sign in when needed"** instead; you then sign in with your AstroWay account and no key is pasted anywhere.
+
+**Cursor, VS Code, Windsurf** and other clients that take a remote URL:
+
+```json
+{
+  "mcpServers": {
+    "astroway": {
+      "url": "https://mcp.astroway.info/mcp",
+      "headers": { "Authorization": "Bearer aw_live_YOUR_KEY" }
+    }
+  }
+}
+```
+
+**Claude Desktop**: download [astroway.mcpb](https://github.com/astroway/astroway-mcp/releases/latest/download/astroway.mcpb), open it and paste your key. Per-client steps: [agent setup](https://api.astroway.info/en/agent-setup/).
+
+### One subject per server
+
+The whole catalogue is a lot of tools for a model to choose from. Each domain server carries one subject, at `https://mcp.astroway.info/mcp/<domain>`:
+
+| Domain | Covers |
+|---|---|
+| `core` | Natal charts, planets, houses, aspects, dignities, rendering, the calendar |
+| `vedic` | Vargas, dashas, panchang, shadbala, yogas, doshas, Jaimini, KP, Vastu |
+| `chinese` | BaZi, Zi Wei Dou Shu, the Chinese calendar, feng shui |
+| `hellenistic` | Lots, sect, triplicity rulers, zodiacal releasing, profections, horary |
+| `tarot` | Rider-Waite-Smith, Marseille, Lenormand |
+| `numerology` | Pythagorean, Chaldean, Kabbalistic |
+| `human-design` | Bodygraph, centres, channels, incarnation cross, penta, group overlay |
+| `forecast` | Transits, progressions, directions, returns, cosmobiology |
+| `relationships` | Synastry, composite, compatibility scores, family and pet charts |
+| `psychological` | Archetypes, Jungian typology, shadow work |
+| `divination` | Geomancy, I Ching, runes, Mayan calendar, Kabbalah, palmistry |
+| `applied` | Business, financial and wellness astrology |
+| `reports` | Sixteen finished PDF reports and white-label settings |
+| `platform` | Webhooks, streaming, AI interpretations |
+
+`https://mcp.astroway.info/mcp/docs` needs no key: it searches the documentation and tells an agent which endpoint does what and what it costs. The list with descriptions is at [mcp.astroway.info/domains](https://mcp.astroway.info/domains).
+
+---
+
+## Run it locally (npm package)
+
+The same catalogue as a stdio server on your machine, for clients that only start local commands or when you want to pin a version.
 
 ### Claude Desktop
 
@@ -238,9 +294,7 @@ When the API ships new endpoints, the next MCP release ships them automatically,
 
 ## Repository layout
 
-This repo is the **public showcase** for `@astroway/mcp`: README, CHANGELOG, LICENSE, install instructions. The runnable code is the published npm package itself: install it with `npm install @astroway/mcp` or run via `npx @astroway/mcp`.
-
-Source is maintained in the private AstroWay monorepo so the build-time generator can read the canonical endpoint manifest from the API workspace next door. The generated package is open source under MIT and ships every release to npm.
+This repository holds the full source of the npm package: `scripts/` generates the tools from the OpenAPI spec at build time, `src/` is the server, `tests/` the suite. Releases are published to npm from here with provenance.
 
 ---
 
@@ -252,11 +306,12 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 ## Links
 
-- 📦 npm: <https://www.npmjs.com/package/@astroway/mcp>
-- 📘 API docs: <https://api.astroway.info/docs/api/>
-- 🔑 Sign up & dashboard: <https://api.astroway.info/dashboard/>
-- 💰 Pricing: <https://api.astroway.info/pricing/>
-- 🌐 Website: <https://astroway.info>
+- npm: <https://www.npmjs.com/package/@astroway/mcp>
+- Hosted server and domain list: <https://mcp.astroway.info/domains>
+- API docs: <https://api.astroway.info/en/docs/>
+- Sign up and dashboard: <https://api.astroway.info/dashboard/>
+- Pricing: <https://api.astroway.info/en/pricing/>
+- Website: <https://api.astroway.info/en/>
 
 ---
 

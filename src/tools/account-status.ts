@@ -1,28 +1,31 @@
 /**
- * astroway_account_status — surface tier, credit balance, rate-limit status.
+ * astroway_account_status — plan, credit balance and billing period of the calling key.
  * Lets the LLM check budget before invoking expensive endpoints.
  */
 
 import { fetchWithRetry } from '../retry.js';
 import { MCP_VERSION } from '../version.js';
 
-interface UsageResponse {
+// GET /v1/auth/keys/me, the documented key introspection endpoint (/keys/me/usage never existed).
+interface KeyMeResponse {
   ok: boolean;
   data?: {
+    key_prefix?: string;
     plan: string;
-    is_lifetime: boolean;
-    credits_used: number;
-    credits_limit: number;
-    credits_remaining: number;
-    credits_rolled_over?: number;
-    rate_limit_per_minute: number;
-    cycle_resets_at?: string;
+    credits_remaining: number | null;
+    credits_total_this_period: number | null;
+    period_end?: string;
+    status?: string;
+    unlimited?: boolean;
+    limits?: { per_hour?: number };
   };
   error?: { code?: string; message?: string };
 }
 
+const fmt = (n: number) => n.toLocaleString('en-US');
+
 export async function fetchAccountStatus(baseUrl: string, apiKey: string): Promise<string> {
-  const url = `${baseUrl}/keys/me/usage`;
+  const url = `${baseUrl}/auth/keys/me`;
   try {
     const res = await fetchWithRetry(url, {
       method: 'GET',
@@ -31,31 +34,35 @@ export async function fetchAccountStatus(baseUrl: string, apiKey: string): Promi
         'User-Agent': `astroway-mcp/${MCP_VERSION}`,
       },
     });
-    const json = (await res.json()) as UsageResponse;
-    if (!res.ok || !json.ok) {
+    const json = (await res.json().catch(() => ({ ok: false }))) as KeyMeResponse;
+    if (!res.ok || !json.ok || !json.data) {
       const err = json.error ?? {};
-      return `Could not fetch account status: ${err.code ?? res.status} — ${err.message ?? 'unknown'}.\nVerify your ASTROWAY_API_KEY is set correctly.`;
+      const hint = res.status === 401 ? '\nVerify your ASTROWAY_API_KEY is set correctly.' : '';
+      return `Could not fetch account status: ${err.code ?? res.status} (${err.message ?? 'unknown'}).${hint}`;
     }
-    const d = json.data!;
-    const remaining_pct = d.credits_limit > 0
-      ? Math.round((d.credits_remaining / d.credits_limit) * 100)
-      : 0;
-    const lines = [
-      `Plan: ${d.plan}${d.is_lifetime ? ' (lifetime)' : ''}`,
-      `Credits: ${d.credits_remaining.toLocaleString('en-US')} of ${d.credits_limit.toLocaleString('en-US')} remaining (${remaining_pct}%)`,
-      `Used this cycle: ${d.credits_used.toLocaleString('en-US')}`,
-    ];
-    if (d.credits_rolled_over && d.credits_rolled_over > 0) {
-      lines.push(`Rolled over from previous cycle: ${d.credits_rolled_over.toLocaleString('en-US')}`);
+    const d = json.data;
+    const lines = [`Plan: ${d.plan}`];
+    if (d.status && d.status !== 'active') lines.push(`Key status: ${d.status}`);
+
+    if (d.limits?.per_hour) {
+      lines.push(`Site key: ${d.limits.per_hour} requests/hour, no credit balance.`);
+      return lines.join('\n');
     }
-    lines.push(`Rate limit: ${d.rate_limit_per_minute} requests/minute`);
-    if (d.cycle_resets_at) {
-      lines.push(`Next reset: ${d.cycle_resets_at}`);
+    if (d.unlimited || d.credits_remaining === null || d.credits_total_this_period === null) {
+      lines.push('Credits: not metered for this key.');
+      return lines.join('\n');
     }
-    if (remaining_pct < 20) {
-      lines.push('', '⚠️ Low budget warning: <20% remaining. Avoid Tier 4+ calls (heavy/AI/PDF reports) unless explicitly requested.');
-    } else if (remaining_pct <= 50) {
-      lines.push('', 'ℹ️ Mid budget: ~50% remaining. Tier 6/7 (rectification, PDF reports) cost 5-50% per call.');
+
+    const total = d.credits_total_this_period;
+    const left = d.credits_remaining;
+    const pct = total > 0 ? Math.round((left / total) * 100) : 0;
+    lines.push(`Credits: ${fmt(left)} of ${fmt(total)} remaining (${pct}%)`);
+    lines.push(`Used this period: ${fmt(Math.max(0, total - left))}`);
+    if (d.period_end) lines.push(`Period ends: ${d.period_end}`);
+    if (pct < 20) {
+      lines.push('', 'Low budget: under 20% left. Avoid Heavy and Premium calls (AI, PDF reports, rectification) unless the user asks for them.');
+    } else if (pct <= 50) {
+      lines.push('', 'About half the budget is left. Heavy and Premium calls cost 5-50% of a small plan each.');
     }
     return lines.join('\n');
   } catch (e: any) {
